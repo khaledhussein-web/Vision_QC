@@ -174,49 +174,46 @@ export async function login(email: string, password: string): Promise<LoginRespo
  * POST /api/register
  */
 export async function register(
+  full_name: string,
   email: string,
   password: string,
   password_confirm: string
 ): Promise<RegisterResponse> {
-  await delay(1000);
+  try {
+    const response = await fetch('http://localhost:5000/api/register', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ full_name, email, password, password_confirm }),
+    });
 
-  if (password !== password_confirm) {
-    throw {
-      status: 400,
-      error: 'Passwords do not match'
-    } as ApiError;
-  }
+    const data = await response.json();
 
-  // Check if email already exists
-  let emailExists = false;
-  mockUsers.forEach((user) => {
-    if (user.email === email) {
-      emailExists = true;
+    if (!response.ok) {
+      throw {
+        status: response.status,
+        error: data.error || 'Registration failed'
+      } as ApiError;
     }
-  });
 
-  if (emailExists) {
+    // Set auth token and user id
+    authToken = data.token;
+    currentUserId = data.user_id;
+
+    return {
+      status: data.status,
+      user_id: data.user_id
+    };
+  } catch (error: any) {
+    if (error.status) {
+      throw error;
+    }
     throw {
-      status: 409,
-      error: 'Email already registered'
+      status: 500,
+      error: 'Network error. Please check if the server is running.'
     } as ApiError;
   }
-
-  const newUserId = mockUsers.size + 1;
-  mockUsers.set(newUserId, {
-    user_id: newUserId,
-    email,
-    password,
-    role: 'user'
-  });
-
-  currentUserId = newUserId;
-  authToken = `mock_token_${newUserId}_${Date.now()}`;
-
-  return {
-    status: 'success',
-    user_id: newUserId
-  };
 }
 
 /**

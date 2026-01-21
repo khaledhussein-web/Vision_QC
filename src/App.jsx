@@ -18,7 +18,6 @@ import ReportsScreen from './components/admin/ReportsScreen';
 import AccessControl from './components/admin/AccessControl';
 import APIDocumentation from './components/APIDocumentation';
 import SEOHead from './components/SEOHead';
-import { Toaster } from './components/ui/sonner';
 
 export default function App() {
   const [currentScreen, setCurrentScreen] = useState('splash');
@@ -260,7 +259,6 @@ export default function App() {
       <div className="mx-auto lg:max-w-7xl max-w-md min-h-screen bg-white lg:shadow-xl shadow-lg">
         <SEOHead {...getSEOData()} />
         {renderScreen()}
-        <Toaster />
       </div>
     </div>
   );

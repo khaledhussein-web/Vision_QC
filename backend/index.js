@@ -72,6 +72,70 @@ app.post('/api/login', async (req, res) => {
   }
 });
 
+// Register endpoint
+app.post('/api/register', async (req, res) => {
+  const { full_name, email, password, password_confirm } = req.body;
+
+  try {
+    // Validate input
+    if (!full_name || !email || !password || !password_confirm) {
+      return res.status(400).json({ error: 'All fields are required' });
+    }
+
+    if (password !== password_confirm) {
+      return res.status(400).json({ error: 'Passwords do not match' });
+    }
+
+    if (password.length < 6) {
+      return res.status(400).json({ error: 'Password must be at least 6 characters long' });
+    }
+
+    // Check if email already exists
+    const emailCheckQuery = 'SELECT user_id FROM users WHERE email = $1';
+    const emailCheckResult = await pool.query(emailCheckQuery, [email]);
+    if (emailCheckResult.rows.length > 0) {
+      return res.status(409).json({ error: 'Email already registered' });
+    }
+
+    // Hash password
+    const hashedPassword = await bcrypt.hash(password, 10);
+
+    // Get user role ID
+    const roleQuery = 'SELECT role_id FROM role WHERE name = $1';
+    const roleResult = await pool.query(roleQuery, ['user']);
+    if (roleResult.rows.length === 0) {
+      return res.status(500).json({ error: 'User role not found' });
+    }
+    const roleId = roleResult.rows[0].role_id;
+
+    // Insert new user
+    const insertQuery = `
+      INSERT INTO users (full_name, email, password_hash, role_id, status)
+      VALUES ($1, $2, $3, $4, 'ACTIVE')
+      RETURNING user_id
+    `;
+    const insertResult = await pool.query(insertQuery, [full_name, email, hashedPassword, roleId]);
+
+    const userId = insertResult.rows[0].user_id;
+
+    // Generate JWT token
+    const token = jwt.sign(
+      { user_id: userId, role: 'user' },
+      process.env.JWT_SECRET,
+      { expiresIn: '24h' }
+    );
+
+    res.status(201).json({
+      status: 'success',
+      user_id: userId,
+      token
+    });
+  } catch (error) {
+    console.error('Registration error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
 // Start server
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
