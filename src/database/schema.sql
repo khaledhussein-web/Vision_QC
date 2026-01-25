@@ -236,3 +236,7 @@ CREATE INDEX idx_ai_chat_user_id ON ai_chat(user_id);
 
 CREATE INDEX idx_ai_chatmessage_chat_id_created_at
   ON ai_chatmessage (chat_id, created_at);
+
+INSERT INTO role (name) VALUES ('USER')  ON CONFLICT (name) DO NOTHING;
+INSERT INTO role (name) VALUES ('ADMIN') ON CONFLICT (name) DO NOTHING;
+

@@ -19,7 +19,7 @@ export default function RegisterScreen({ onRegister, onBack }) {
     setLoading(true);
 
     try {
-      await register(name, email, password, confirmPassword);
+      await register(name, email, password, confirmPassword, 'user');
       onRegister();
     } catch (err) {
       setError(err.error || 'Registration failed. Please try again.');

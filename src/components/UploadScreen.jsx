@@ -5,13 +5,14 @@ import { Input } from './ui/input';
 import { Label } from './ui/label';
 import { ImageWithFallback } from './figma/ImageWithFallback';
 import { toast } from 'sonner';
-import { uploadImage } from '../utils/api';
+import { analyzeImage } from '../utils/api';
 
 export default function UploadScreen({ navigate, setSelectedImage, selectedImage, onPredictionComplete }) {
   const [cameraMode, setCameraMode] = useState(false);
   const [stream, setStream] = useState(null);
   const [uploading, setUploading] = useState(false);
   const [notes, setNotes] = useState('');
+  const [selectedFile, setSelectedFile] = useState(null);
   const videoRef = useRef(null);
   const canvasRef = useRef(null);
   const fileInputRef = useRef(null);
@@ -73,10 +74,20 @@ export default function UploadScreen({ navigate, setSelectedImage, selectedImage
       const ctx = canvas.getContext('2d');
       if (ctx) {
         ctx.drawImage(video, 0, 0);
-        const imageData = canvas.toDataURL('image/jpeg');
-        setSelectedImage(imageData);
-        stopCamera();
-        toast.success('Photo captured');
+        canvas.toBlob((blob) => {
+          if (!blob) {
+            toast.error('Failed to capture photo');
+            return;
+          }
+          const imageData = canvas.toDataURL('image/jpeg');
+          const file = new File([blob], `camera-${Date.now()}.jpg`, {
+            type: blob.type || 'image/jpeg'
+          });
+          setSelectedFile(file);
+          setSelectedImage(imageData);
+          stopCamera();
+          toast.success('Photo captured');
+        }, 'image/jpeg', 0.92);
       }
     }
   };
@@ -97,38 +108,39 @@ export default function UploadScreen({ navigate, setSelectedImage, selectedImage
       reader.onload = (event) => {
         const imageData = event.target?.result;
         setSelectedImage(imageData);
+        setSelectedFile(file);
         toast.success('Image selected from gallery');
       };
       reader.readAsDataURL(file);
     }
   };
 
-  const handleAnalyze = () => {
-    if (selectedImage) {
-      setUploading(true);
-      uploadImage(selectedImage)
-        .then(response => {
-          if (onPredictionComplete && response.prediction) {
-            // Convert prediction to PredictionResult format
-            const predictionResult = {
-              prediction_id: response.prediction.prediction_id,
-              image_url: response.image_url,
-              label: response.prediction.label,
-              confidence: response.prediction.confidence,
-              suggested_solution: response.prediction.suggested_solution,
-              heatmap_url: response.prediction.heatmap_url
-            };
-            onPredictionComplete(predictionResult);
-          }
-          navigate('result');
-        })
-        .catch(error => {
-          toast.error('Failed to analyze image');
-          console.error('Upload error:', error);
-        })
-        .finally(() => {
-          setUploading(false);
-        });
+  const handleAnalyze = async () => {
+    if (!selectedFile || uploading) {
+      if (!selectedFile) {
+        toast.error('Please select or capture an image first');
+      }
+      return;
+    }
+
+    setUploading(true);
+    console.log('Selected file:', selectedFile);
+    console.log('Sending to backend...');
+
+    try {
+      const response = await analyzeImage(selectedFile);
+      console.log('AI result:', response);
+      if (onPredictionComplete && response?.label) {
+        onPredictionComplete(response);
+        navigate('result');
+      } else {
+        toast.error('Prediction service returned no label');
+      }
+    } catch (error) {
+      toast.error('Failed to analyze image');
+      console.error('Analyze error:', error);
+    } finally {
+      setUploading(false);
     }
   };
 
@@ -242,7 +254,10 @@ export default function UploadScreen({ navigate, setSelectedImage, selectedImage
                 />
               </div>
               <button
-                onClick={() => setSelectedImage(null)}
+                onClick={() => {
+                  setSelectedImage(null);
+                  setSelectedFile(null);
+                }}
                 className="mt-3 text-red-600 hover:text-red-700"
               >
                 Remove Image
@@ -279,7 +294,7 @@ export default function UploadScreen({ navigate, setSelectedImage, selectedImage
             ) : (
               <Upload className="w-5 h-5 mr-2" />
             )}
-            Analyze Image
+            {uploading ? 'Analyzing...' : 'View Result'}
           </Button>
         )}
 
