@@ -4,7 +4,7 @@ const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const cors = require('cors');
 const multer = require('multer');
-const axios = require('axios');
+const fetch = (...args) => import('node-fetch').then(({ default: fetch }) => fetch(...args));
 const FormData = require('form-data');
 const path = require('path');
 const fs = require('fs');
@@ -12,7 +12,7 @@ require('dotenv').config();
 
 const app = express();
 const PORT = process.env.PORT || 5000;
-const PYTHON_SERVICE_URL = process.env.PYTHON_SERVICE_URL || 'http://localhost:8000';
+const PYTHON_SERVICE_URL = process.env.PYTHON_SERVICE_URL || 'http://127.0.0.1:8000';
 
 // Middleware
 app.use(cors());
@@ -22,6 +22,8 @@ const uploadsDir = path.join(__dirname, 'uploads');
 if (!fs.existsSync(uploadsDir)) {
   fs.mkdirSync(uploadsDir, { recursive: true });
 }
+
+app.use('/uploads', express.static(uploadsDir));
 
 const storage = multer.diskStorage({
   destination: (_req, _file, cb) => {
@@ -117,6 +119,14 @@ const authenticateToken = (req, res, next) => {
   }
 };
 
+const requireAdmin = (req, res, next) => {
+  const role = String(req.user?.role || '').toLowerCase();
+  if (role !== 'admin') {
+    return res.status(403).json({ error: 'Admin access required' });
+  }
+  return next();
+};
+
 // Register endpoint
 app.post('/api/register', async (req, res) => {
   const { full_name, email, password, password_confirm } = req.body;
@@ -201,21 +211,46 @@ app.post('/api/register', async (req, res) => {
 
 // Analyze endpoint - forwards image to Python service
 app.post('/api/analyze', authenticateToken, upload.single('image'), async (req, res) => {
+  console.log('Analyze request received', {
+    userId: req.user?.user_id,
+    role: req.user?.role,
+    hasFile: Boolean(req.file),
+    contentType: req.headers['content-type']
+  });
   if (!req.file) {
     return res.status(400).json({ error: 'Image file is required' });
   }
 
   try {
+    console.log('Analyze file info', {
+      originalname: req.file.originalname,
+      mimetype: req.file.mimetype,
+      size: req.file.size,
+      path: req.file.path
+    });
     const formData = new FormData();
     formData.append('image', fs.createReadStream(req.file.path), {
       filename: req.file.originalname || path.basename(req.file.path),
       contentType: req.file.mimetype || 'application/octet-stream'
     });
 
-    const response = await axios.post(`${PYTHON_SERVICE_URL}/predict`, formData, {
+    console.log('Forwarding to Python service', {
+      url: `${PYTHON_SERVICE_URL}/predict`
+    });
+    const response = await fetch(`${PYTHON_SERVICE_URL}/predict`, {
+      method: 'POST',
+      body: formData,
       headers: formData.getHeaders(),
       timeout: 15000
     });
+
+    if (!response.ok) {
+      const text = await response.text();
+      console.error('FastAPI error:', text);
+      return res.status(500).json({ error: 'Prediction service error' });
+    }
+
+    const data = await response.json();
 
     const imagePath = path.relative(__dirname, req.file.path).replace(/\\/g, '/');
     const insertImageQuery = `
@@ -233,18 +268,235 @@ app.post('/api/analyze', authenticateToken, upload.single('image'), async (req, 
     `;
     const predictionResult = await pool.query(insertPredictionQuery, [
       imageId,
-      response.data.label,
-      response.data.confidence,
-      response.data.heatmap_url || null,
-      response.data.suggested_sc || null
+      data.label,
+      data.confidence,
+      data.heatmap_url || null,
+      data.suggested_sc || null
     ]);
 
     res.json(predictionResult.rows[0]);
   } catch (error) {
     const status = error.response?.status || 500;
     const detail = error.response?.data || { error: 'Prediction service error' };
+    const responseData = error.response?.data;
+    const responseStatus = error.response?.status;
+    const responseHeaders = error.response?.headers;
     console.error('Analyze error:', error.message || error);
-    res.status(status).json(detail);
+    if (responseStatus || responseData || responseHeaders) {
+      console.error('Analyze upstream response:', {
+        status: responseStatus,
+        data: responseData,
+        headers: responseHeaders
+      });
+    }
+    res.status(status).json(
+      typeof detail === 'object' && detail !== null
+        ? detail
+        : { error: 'Prediction service error', detail }
+    );
+  }
+});
+
+app.get('/api/users/:userId/history', authenticateToken, async (req, res) => {
+  const requestedUserId = Number(req.params.userId);
+  const page = Math.max(Number(req.query.page) || 1, 1);
+  const perPage = Math.min(Math.max(Number(req.query.per_page) || 20, 1), 100);
+
+  if (!requestedUserId) {
+    return res.status(400).json({ error: 'Invalid user ID' });
+  }
+
+  const requesterId = Number(req.user?.user_id);
+  const requesterRole = String(req.user?.role || '').toLowerCase();
+  const isAdmin = requesterRole === 'admin';
+
+  if (!isAdmin && requesterId !== requestedUserId) {
+    return res.status(403).json({ error: 'Access denied' });
+  }
+
+  const offset = (page - 1) * perPage;
+
+  try {
+    const countQuery = `
+      SELECT COUNT(*) AS total
+      FROM prediction p
+      JOIN image i ON p.image_id = i.image_id
+      WHERE i.user_id = $1
+    `;
+    const countResult = await pool.query(countQuery, [requestedUserId]);
+    const total = Number(countResult.rows[0]?.total || 0);
+
+    const historyQuery = `
+      SELECT
+        p.prediction_id,
+        p.label,
+        p.confidence,
+        p.heatmap_url,
+        p.suggested_sc,
+        p.created_at,
+        p.updated_at,
+        i.image_id,
+        i.image_path,
+        i.uploaded_at
+      FROM prediction p
+      JOIN image i ON p.image_id = i.image_id
+      WHERE i.user_id = $1
+      ORDER BY p.created_at DESC
+      LIMIT $2 OFFSET $3
+    `;
+    const historyResult = await pool.query(historyQuery, [requestedUserId, perPage, offset]);
+
+    const baseUrl = `${req.protocol}://${req.get('host')}`;
+    const data = historyResult.rows.map(row => ({
+      ...row,
+      image_url: row.image_path ? `${baseUrl}/${row.image_path.replace(/\\/g, '/')}` : null
+    }));
+
+    return res.json({
+      data,
+      page,
+      per_page: perPage,
+      total,
+      total_pages: Math.ceil(total / perPage)
+    });
+  } catch (error) {
+    console.error('History error:', error);
+    return res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Admin: list users
+app.get('/api/admin/users', authenticateToken, requireAdmin, async (req, res) => {
+  const page = Math.max(Number(req.query.page) || 1, 1);
+  const perPage = Math.min(Math.max(Number(req.query.per_page) || 20, 1), 100);
+  const offset = (page - 1) * perPage;
+
+  try {
+    const countResult = await pool.query('SELECT COUNT(*) AS total FROM users');
+    const total = Number(countResult.rows[0]?.total || 0);
+
+    const usersQuery = `
+      SELECT
+        u.user_id,
+        u.full_name,
+        u.email,
+        u.status,
+        u.created_at,
+        u.last_login,
+        r.name AS role
+      FROM users u
+      JOIN role r ON u.role_id = r.role_id
+      ORDER BY u.created_at DESC
+      LIMIT $1 OFFSET $2
+    `;
+    const usersResult = await pool.query(usersQuery, [perPage, offset]);
+
+    return res.json({
+      data: usersResult.rows,
+      page,
+      per_page: perPage,
+      total,
+      total_pages: Math.ceil(total / perPage)
+    });
+  } catch (error) {
+    console.error('Admin users error:', error);
+    return res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Admin: list images with predictions
+app.get('/api/admin/images', authenticateToken, requireAdmin, async (req, res) => {
+  const page = Math.max(Number(req.query.page) || 1, 1);
+  const perPage = Math.min(Math.max(Number(req.query.per_page) || 20, 1), 100);
+  const offset = (page - 1) * perPage;
+
+  try {
+    const countQuery = `
+      SELECT COUNT(*) AS total
+      FROM image i
+      LEFT JOIN prediction p ON p.image_id = i.image_id
+    `;
+    const countResult = await pool.query(countQuery);
+    const total = Number(countResult.rows[0]?.total || 0);
+
+    const imagesQuery = `
+      SELECT
+        i.image_id,
+        i.image_path,
+        i.uploaded_at,
+        i.user_id,
+        u.full_name,
+        u.email,
+        p.prediction_id,
+        p.label,
+        p.confidence,
+        p.heatmap_url,
+        p.suggested_sc,
+        p.created_at AS predicted_at
+      FROM image i
+      JOIN users u ON i.user_id = u.user_id
+      LEFT JOIN prediction p ON p.image_id = i.image_id
+      ORDER BY i.uploaded_at DESC
+      LIMIT $1 OFFSET $2
+    `;
+    const imagesResult = await pool.query(imagesQuery, [perPage, offset]);
+
+    const baseUrl = `${req.protocol}://${req.get('host')}`;
+    const data = imagesResult.rows.map(row => ({
+      ...row,
+      image_url: row.image_path ? `${baseUrl}/${row.image_path.replace(/\\/g, '/')}` : null
+    }));
+
+    return res.json({
+      data,
+      page,
+      per_page: perPage,
+      total,
+      total_pages: Math.ceil(total / perPage)
+    });
+  } catch (error) {
+    console.error('Admin images error:', error);
+    return res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Admin: list reports
+app.get('/api/admin/reports', authenticateToken, requireAdmin, async (req, res) => {
+  const page = Math.max(Number(req.query.page) || 1, 1);
+  const perPage = Math.min(Math.max(Number(req.query.per_page) || 20, 1), 100);
+  const offset = (page - 1) * perPage;
+
+  try {
+    const countResult = await pool.query('SELECT COUNT(*) AS total FROM report');
+    const total = Number(countResult.rows[0]?.total || 0);
+
+    const reportsQuery = `
+      SELECT
+        r.report_id,
+        r.report_type,
+        r.format,
+        r.download_link,
+        r.created_at,
+        r.operator_id,
+        u.full_name AS operator_name,
+        u.email AS operator_email
+      FROM report r
+      JOIN users u ON r.operator_id = u.user_id
+      ORDER BY r.created_at DESC
+      LIMIT $1 OFFSET $2
+    `;
+    const reportsResult = await pool.query(reportsQuery, [perPage, offset]);
+
+    return res.json({
+      data: reportsResult.rows,
+      page,
+      per_page: perPage,
+      total,
+      total_pages: Math.ceil(total / perPage)
+    });
+  } catch (error) {
+    console.error('Admin reports error:', error);
+    return res.status(500).json({ error: 'Internal server error' });
   }
 });
 

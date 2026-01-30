@@ -7,7 +7,13 @@ import { ImageWithFallback } from './figma/ImageWithFallback';
 import { toast } from 'sonner';
 import { analyzeImage } from '../utils/api';
 
-export default function UploadScreen({ navigate, setSelectedImage, selectedImage, onPredictionComplete }) {
+export default function UploadScreen({
+  navigate,
+  setSelectedImage,
+  selectedImage,
+  onPredictionComplete,
+  resetKey,
+}) {
   const [cameraMode, setCameraMode] = useState(false);
   const [stream, setStream] = useState(null);
   const [uploading, setUploading] = useState(false);
@@ -22,6 +28,16 @@ export default function UploadScreen({ navigate, setSelectedImage, selectedImage
       stopCamera();
     };
   }, []);
+
+  useEffect(() => {
+    stopCamera();
+    setSelectedFile(null);
+    setSelectedImage(null);
+    setNotes('');
+    if (fileInputRef.current) {
+      fileInputRef.current.value = '';
+    }
+  }, [resetKey, setSelectedImage]);
 
   const startCamera = async () => {
     try {
@@ -257,6 +273,9 @@ export default function UploadScreen({ navigate, setSelectedImage, selectedImage
                 onClick={() => {
                   setSelectedImage(null);
                   setSelectedFile(null);
+                  if (fileInputRef.current) {
+                    fileInputRef.current.value = '';
+                  }
                 }}
                 className="mt-3 text-red-600 hover:text-red-700"
               >

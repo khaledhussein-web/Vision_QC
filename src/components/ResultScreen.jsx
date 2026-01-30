@@ -37,7 +37,7 @@ export default function ResultScreen({ navigate, selectedImage, currentPredictio
   return (
     <div className="min-h-screen bg-gradient-to-br from-green-50 to-white flex flex-col">
       <div className="bg-white border-b border-gray-200 p-4 flex items-center gap-3">
-        <button onClick={() => navigate('upload')} className="text-gray-600 hover:text-gray-900">
+        <button onClick={() => navigate('upload', { replace: true })} className="text-gray-600 hover:text-gray-900">
           <ArrowLeft className="w-6 h-6" />
         </button>
         <h2 className="text-gray-900">Analysis Result</h2>
@@ -106,7 +106,15 @@ export default function ResultScreen({ navigate, selectedImage, currentPredictio
 
           <div className="rounded-xl border border-gray-100 bg-gray-50 p-4">
             <p className="text-gray-500 text-xs uppercase">Heatmap</p>
-            {prediction?.heatmap_url ? (
+            {prediction?.gradcam_png_base64 ? (
+              <div className="mt-3 overflow-hidden rounded-xl border border-gray-200 bg-white">
+                <img
+                  src={`data:image/png;base64,${prediction.gradcam_png_base64}`}
+                  alt="Grad-CAM heatmap"
+                  className="h-auto w-full"
+                />
+              </div>
+            ) : prediction?.heatmap_url ? (
               <a
                 href={prediction.heatmap_url}
                 target="_blank"
@@ -122,7 +130,7 @@ export default function ResultScreen({ navigate, selectedImage, currentPredictio
         </div>
 
         <Button
-          onClick={() => navigate('upload')}
+          onClick={() => navigate('upload', { replace: true })}
           className="w-full bg-gradient-to-r from-green-600 to-green-700 hover:from-green-700 hover:to-green-800 shadow-lg py-6"
         >
           Analyze Another Image

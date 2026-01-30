@@ -279,6 +279,66 @@ export async function processPayment(
   return parseResponse(response);
 }
 
+/**
+ * Admin: List Users
+ * GET /api/admin/users
+ */
+export async function getAdminUsers(page = 1, perPage = 20) {
+  const query = new URLSearchParams({
+    page: String(page),
+    per_page: String(perPage)
+  });
+
+  const response = await fetch(`${API_BASE_URL}/api/admin/users?${query.toString()}`, {
+    method: 'GET',
+    headers: {
+      ...getAuthHeaders()
+    }
+  });
+
+  return parseResponse(response);
+}
+
+/**
+ * Admin: List Images
+ * GET /api/admin/images
+ */
+export async function getAdminImages(page = 1, perPage = 20) {
+  const query = new URLSearchParams({
+    page: String(page),
+    per_page: String(perPage)
+  });
+
+  const response = await fetch(`${API_BASE_URL}/api/admin/images?${query.toString()}`, {
+    method: 'GET',
+    headers: {
+      ...getAuthHeaders()
+    }
+  });
+
+  return parseResponse(response);
+}
+
+/**
+ * Admin: List Reports
+ * GET /api/admin/reports
+ */
+export async function getAdminReports(page = 1, perPage = 20) {
+  const query = new URLSearchParams({
+    page: String(page),
+    per_page: String(perPage)
+  });
+
+  const response = await fetch(`${API_BASE_URL}/api/admin/reports?${query.toString()}`, {
+    method: 'GET',
+    headers: {
+      ...getAuthHeaders()
+    }
+  });
+
+  return parseResponse(response);
+}
+
 // Helper function to set auth token (useful for testing)
 export function setAuthToken(token) {
   authToken = token;

@@ -24,6 +24,7 @@ export default function App() {
   const [selectedImage, setSelectedImage] = useState(null);
   const [selectedImageId, setSelectedImageId] = useState(null);
   const [currentPrediction, setCurrentPrediction] = useState(null);
+  const [uploadResetToken, setUploadResetToken] = useState(0);
   const [isAdmin, setIsAdmin] = useState(false);
   const [userId, setUserId] = useState(null);
   const [users, setUsers] = useState([
@@ -64,7 +65,12 @@ export default function App() {
     },
   ]);
 
-  const navigate = (screen) => {
+  const navigate = (screen, options = {}) => {
+    if (screen === 'upload') {
+      setSelectedImage(null);
+      setCurrentPrediction(null);
+      setUploadResetToken(prev => prev + 1);
+    }
     setCurrentScreen(screen);
   };
 
@@ -216,6 +222,7 @@ export default function App() {
           navigate={navigate} 
           setSelectedImage={setSelectedImage} 
           selectedImage={selectedImage} 
+          resetKey={uploadResetToken}
           onPredictionComplete={(prediction) => setCurrentPrediction(prediction)}
         />; 
       case 'result':
@@ -223,7 +230,7 @@ export default function App() {
       case 'chat':
         return <ChatScreen navigate={navigate} />;
       case 'history':
-        return <HistoryScreen navigate={navigate} />;
+        return <HistoryScreen navigate={navigate} userId={userId} />;
       case 'bookmarks':
         return <BookmarksScreen navigate={navigate} />;
       case 'profile':
