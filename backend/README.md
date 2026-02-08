@@ -19,14 +19,25 @@ This is the backend server for the VisionQC application, connecting to a Postgre
    npm install
    ```
 
-5. Initialize the database (create tables and insert initial data):
+5. Set up Python 3.11 tooling for the FastAPI service:
+   ```
+   py -3.11 -m venv .venv
+   .\.venv\Scripts\python.exe -m pip install -r backend\requirements.txt
+   ```
+
+6. Initialize the database (create tables and insert initial data):
    ```
    npm run init-db
    ```
 
-6. Start the server:
+7. Start the server:
    ```
    npm start
+   ```
+
+8. Start the FastAPI service:
+   ```
+   .\.venv\Scripts\python.exe -m uvicorn backend.fastapi_service:app --host 127.0.0.1 --port 8000 --reload
    ```
 
 The server will run on `http://localhost:5000`.

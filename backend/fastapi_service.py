@@ -6,8 +6,9 @@ import numpy as np
 import cv2
 import base64
 import torch
+from torchvision import transforms
 
-from transformers import AutoModelForImageClassification, AutoImageProcessor
+from transformers import AutoModelForImageClassification, AutoImageProcessor, AutoFeatureExtractor
 from pytorch_grad_cam import GradCAM
 from pytorch_grad_cam.utils.model_targets import ClassifierOutputTarget
 from pytorch_grad_cam.utils.image import show_cam_on_image
@@ -28,9 +29,40 @@ ALLOWED_CONTENT_TYPES = {"image/jpeg", "image/png", "image/webp"}
 # Model + processor (REAL)
 # -------------------------
 MODEL_ID = "linkanjarad/mobilenet_v2_1.0_224-plant-disease-identification"
-processor = AutoImageProcessor.from_pretrained(MODEL_ID)
+
+class SimpleImageProcessor:
+    def __init__(self, size: int = 224):
+        self.size = size
+        self.tfm = transforms.Compose(
+            [
+                transforms.Resize((size, size)),
+                transforms.ToTensor(),
+                transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+            ]
+        )
+
+    def __call__(self, images, return_tensors="pt"):
+        if isinstance(images, list):
+            tensors = [self.tfm(img) for img in images]
+            pixel_values = torch.stack(tensors, dim=0)
+        else:
+            pixel_values = self.tfm(images).unsqueeze(0)
+        return {"pixel_values": pixel_values}
+
+try:
+    processor = AutoImageProcessor.from_pretrained(MODEL_ID, use_fast=False)
+except Exception:
+    try:
+        # Fallback for older checkpoints that only ship a feature extractor
+        processor = AutoFeatureExtractor.from_pretrained(MODEL_ID)
+    except Exception:
+        # Final fallback: basic ImageNet-style preprocessing
+        processor = SimpleImageProcessor()
 
 hf_model = AutoModelForImageClassification.from_pretrained(MODEL_ID)
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+hf_model.to(device)
+print(f"[VisionQC] Using device: {device}")
 hf_model.eval()
 
 
@@ -45,6 +77,7 @@ class LogitsWrapper(torch.nn.Module):
 
 
 cam_model = LogitsWrapper(hf_model)
+cam_model.eval()
 
 
 def pick_target_layer(m: torch.nn.Module) -> torch.nn.Module:
@@ -55,7 +88,7 @@ def pick_target_layer(m: torch.nn.Module) -> torch.nn.Module:
     return conv_layers[-1]
 
 
-TARGET_LAYER = pick_target_layer(hf_model)
+TARGET_LAYER = pick_target_layer(cam_model)
 
 
 def make_gradcam(pil_img: Image.Image, class_idx: int) -> str:
@@ -63,7 +96,7 @@ def make_gradcam(pil_img: Image.Image, class_idx: int) -> str:
     Returns a base64 PNG Grad-CAM overlay for the predicted class.
     """
     inputs = processor(images=pil_img, return_tensors="pt")
-    pixel_values = inputs["pixel_values"]  # [1,3,H,W]
+    pixel_values = inputs["pixel_values"].to(device)  # [1,3,H,W]
 
     cam = GradCAM(model=cam_model, target_layers=[TARGET_LAYER])
     targets = [ClassifierOutputTarget(class_idx)]
@@ -175,6 +208,7 @@ async def predict(image: UploadFile = File(...)):
 
     # Prediction (no gradients)
     inputs = processor(images=pil, return_tensors="pt")
+    inputs = {k: v.to(device) for k, v in inputs.items()}
     with torch.no_grad():
         out = hf_model(**inputs)
         probs = torch.softmax(out.logits, dim=-1)[0]

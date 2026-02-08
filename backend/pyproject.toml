@@ -1,0 +1,22 @@
+[project]
+name = "visionqc-fastapi"
+version = "0.1.0"
+description = "VisionQC FastAPI service"
+requires-python = ">=3.11"
+dependencies = [
+  "fastapi",
+  "uvicorn[standard]",
+  "python-multipart",
+  "pillow",
+  "numpy",
+  "opencv-python",
+  "torch",
+  "transformers",
+  "pytorch-grad-cam",
+]
+
+[tool.uvicorn]
+app = "backend.fastapi_service:app"
+host = "127.0.0.1"
+port = 8000
+reload = true

@@ -244,7 +244,8 @@ export async function getChatHistory(chatId) {
  */
 export async function sendChatMessage(
   userId,
-  message
+  message,
+  history = []
 ) {
   const response = await fetch(`${API_BASE_URL}/api/chat`, {
     method: 'POST',
@@ -252,7 +253,7 @@ export async function sendChatMessage(
       'Content-Type': 'application/json',
       ...getAuthHeaders()
     },
-    body: JSON.stringify({ user_id: userId, message })
+    body: JSON.stringify({ user_id: userId, message, history })
   });
 
   return parseResponse(response);

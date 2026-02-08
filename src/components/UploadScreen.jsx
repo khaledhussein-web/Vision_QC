@@ -85,6 +85,10 @@ export default function UploadScreen({
     if (videoRef.current && canvasRef.current) {
       const video = videoRef.current;
       const canvas = canvasRef.current;
+      if (!video.videoWidth || !video.videoHeight) {
+        toast.error('Camera is not ready yet. Please try again.');
+        return;
+      }
       canvas.width = video.videoWidth;
       canvas.height = video.videoHeight;
       const ctx = canvas.getContext('2d');
@@ -93,6 +97,10 @@ export default function UploadScreen({
         canvas.toBlob((blob) => {
           if (!blob) {
             toast.error('Failed to capture photo');
+            return;
+          }
+          if (blob.size === 0) {
+            toast.error('Captured image is empty. Please try again.');
             return;
           }
           const imageData = canvas.toDataURL('image/jpeg');
@@ -120,6 +128,14 @@ export default function UploadScreen({
   const handleFileChange = (e) => {
     const file = e.target.files?.[0];
     if (file) {
+      if (!file.type?.startsWith('image/')) {
+        toast.error('Please select a valid image file');
+        return;
+      }
+      if (file.size === 0) {
+        toast.error('Selected file is empty. Please choose another image.');
+        return;
+      }
       const reader = new FileReader();
       reader.onload = (event) => {
         const imageData = event.target?.result;
@@ -136,6 +152,10 @@ export default function UploadScreen({
       if (!selectedFile) {
         toast.error('Please select or capture an image first');
       }
+      return;
+    }
+    if (selectedFile.size === 0) {
+      toast.error('Selected file is empty. Please choose another image.');
       return;
     }
 

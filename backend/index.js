@@ -6,6 +6,7 @@ const cors = require('cors');
 const multer = require('multer');
 const fetch = (...args) => import('node-fetch').then(({ default: fetch }) => fetch(...args));
 const FormData = require('form-data');
+const OpenAI = require('openai');
 const path = require('path');
 const fs = require('fs');
 require('dotenv').config();
@@ -13,6 +14,7 @@ require('dotenv').config();
 const app = express();
 const PORT = process.env.PORT || 5000;
 const PYTHON_SERVICE_URL = process.env.PYTHON_SERVICE_URL || 'http://127.0.0.1:8000';
+const OPENAI_MODEL = process.env.OPENAI_MODEL || 'gpt-4.1-mini';
 
 // Middleware
 app.use(cors());
@@ -294,6 +296,55 @@ app.post('/api/analyze', authenticateToken, upload.single('image'), async (req, 
         ? detail
         : { error: 'Prediction service error', detail }
     );
+  }
+});
+
+// Chat endpoint - forwards messages to OpenAI
+app.post('/api/chat', authenticateToken, async (req, res) => {
+  const apiKey = process.env.OPENAI_API_KEY;
+  if (!apiKey) {
+    return res.status(500).json({ error: 'OPENAI_API_KEY is not configured' });
+  }
+
+  const { message, history } = req.body || {};
+  const trimmedMessage = typeof message === 'string' ? message.trim() : '';
+  if (!trimmedMessage) {
+    return res.status(400).json({ error: 'Message is required' });
+  }
+
+  const safeHistory = Array.isArray(history)
+    ? history
+        .filter(item => item && typeof item.role === 'string' && typeof item.content === 'string')
+        .slice(-8)
+    : [];
+
+  try {
+    const client = new OpenAI({ apiKey });
+    const input = [
+      {
+        role: 'system',
+        content:
+          'You are VisionQC, an AI assistant for plant disease detection. Provide concise, practical guidance. ' +
+          'If unsure, ask for a clear photo and suggest using the Upload screen for analysis. ' +
+          'Avoid medical claims; this is general plant-care advice.',
+      },
+      ...safeHistory.map(item => ({
+        role: item.role === 'assistant' ? 'assistant' : 'user',
+        content: item.content,
+      })),
+      { role: 'user', content: trimmedMessage },
+    ];
+
+    const response = await client.responses.create({
+      model: OPENAI_MODEL,
+      input,
+    });
+
+    const reply = response.output_text || 'Sorry, I could not generate a response.';
+    return res.json({ reply });
+  } catch (error) {
+    console.error('Chat error:', error?.message || error);
+    return res.status(500).json({ error: 'Chat service error' });
   }
 });
 
