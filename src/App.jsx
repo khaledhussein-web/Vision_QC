@@ -27,6 +27,7 @@ export default function App() {
   const [uploadResetToken, setUploadResetToken] = useState(0);
   const [isAdmin, setIsAdmin] = useState(false);
   const [userId, setUserId] = useState(null);
+  const [userEmail, setUserEmail] = useState('');
   const [users, setUsers] = useState([
     {
       id: 1,
@@ -74,9 +75,10 @@ export default function App() {
     setCurrentScreen(screen);
   };
 
-  const handleLogin = (isAdminUser, userId) => {
+  const handleLogin = (isAdminUser, userId, email) => {
     setIsAdmin(isAdminUser);
     setUserId(userId);
+    setUserEmail(email || '');
     if (isAdminUser) {
       navigate('admin-dashboard');
     } else {
@@ -232,11 +234,11 @@ export default function App() {
       case 'history':
         return <HistoryScreen navigate={navigate} userId={userId} />;
       case 'bookmarks':
-        return <BookmarksScreen navigate={navigate} />;
+        return <BookmarksScreen navigate={navigate} userId={userId} />;
       case 'profile':
-        return <ProfileScreen navigate={navigate} />;
+        return <ProfileScreen navigate={navigate} userId={userId} userEmail={userEmail} />;
       case 'payment':
-        return <PaymentScreen navigate={navigate} />;
+        return <PaymentScreen navigate={navigate} userId={userId} userEmail={userEmail} />;
       case 'admin-dashboard':
         return <AdminDashboard navigate={navigate} />;
       case 'admin-images':

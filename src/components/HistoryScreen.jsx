@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
-import { ArrowLeft, History, ImageOff, Loader2 } from 'lucide-react';
-import { getHistory } from '../utils/api';
+import { ArrowLeft, History, ImageOff, Loader2, Bookmark } from 'lucide-react';
+import { getHistory, toggleBookmark } from '../utils/api';
 import { ImageWithFallback } from './figma/ImageWithFallback';
 import { Button } from './ui/button';
 
@@ -22,12 +22,29 @@ const formatConfidence = (confidence) => {
   return `${Math.round(numeric * 100)}%`;
 };
 
+const isBookmarked = (item) => {
+  if (!item) return false;
+  const value =
+    item.bookmarked ??
+    item.is_bookmarked ??
+    item.isBookmarked ??
+    item.saved ??
+    item.is_saved ??
+    item.favorite ??
+    item.is_favorite ??
+    item.isFavorite ??
+    item.bookmark ??
+    item.bookmark_id;
+  return Boolean(value);
+};
+
 export default function HistoryScreen({ navigate, userId }) {
   const [history, setHistory] = useState([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [page, setPage] = useState(1);
   const [totalPages, setTotalPages] = useState(1);
+  const [bookmarkingId, setBookmarkingId] = useState(null);
 
   useEffect(() => {
     let isMounted = true;
@@ -61,6 +78,27 @@ export default function HistoryScreen({ navigate, userId }) {
       isMounted = false;
     };
   }, [userId, page]);
+
+  const handleBookmark = async (predictionId, currentlyBookmarked) => {
+    if (!userId || !predictionId) return;
+    setBookmarkingId(predictionId);
+    setError('');
+    try {
+      const action = currentlyBookmarked ? 'remove' : 'add';
+      await toggleBookmark(predictionId, userId, action);
+      setHistory((prev) =>
+        prev.map((item) =>
+          item.prediction_id === predictionId
+            ? { ...item, bookmarked: !currentlyBookmarked }
+            : item
+        )
+      );
+    } catch (err) {
+      setError(err?.error || 'Unable to update bookmark.');
+    } finally {
+      setBookmarkingId(null);
+    }
+  };
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-green-50 to-white flex flex-col">
@@ -104,7 +142,7 @@ export default function HistoryScreen({ navigate, userId }) {
             {history.map((item) => (
               <div key={item.prediction_id} className="bg-white rounded-2xl p-4 shadow-md">
                 <div className="flex flex-col sm:flex-row gap-4">
-                  <div className="w-full sm:w-48 h-36 rounded-xl overflow-hidden bg-gray-100">
+                  <div className="w-full h-48 sm:basis-3/4 sm:h-64 rounded-xl overflow-hidden bg-gray-100">
                     {item.image_url ? (
                       <ImageWithFallback
                         src={item.image_url}
@@ -118,7 +156,7 @@ export default function HistoryScreen({ navigate, userId }) {
                     )}
                   </div>
 
-                  <div className="flex-1 space-y-2">
+                  <div className="w-full sm:basis-1/4 space-y-2">
                     <div className="flex items-center justify-between gap-2 flex-wrap">
                       <div>
                         <p className="text-xs uppercase text-gray-500">Prediction</p>
@@ -151,6 +189,21 @@ export default function HistoryScreen({ navigate, userId }) {
                     <div className="text-sm">
                       <p className="text-xs uppercase text-gray-500">Suggested Solution</p>
                       <p className="text-gray-900">{item.suggested_sc || 'No suggestion available.'}</p>
+                    </div>
+
+                    <div className="pt-2">
+                      <Button
+                        variant="outline"
+                        onClick={() => handleBookmark(item.prediction_id, isBookmarked(item))}
+                        disabled={bookmarkingId === item.prediction_id}
+                      >
+                        <Bookmark className="w-4 h-4 mr-2" />
+                        {bookmarkingId === item.prediction_id
+                          ? 'Updating...'
+                          : isBookmarked(item)
+                            ? 'Remove Bookmark'
+                            : 'Save to Bookmarks'}
+                      </Button>
                     </div>
                   </div>
                 </div>

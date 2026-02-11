@@ -12,7 +12,7 @@ export default function ChatScreen({ navigate }) {
     if (!trimmed) return;
     setError('');
     setIsSending(true);
-    const nextId = Math.max(...messages.map(m => m.id)) + 1;
+    const nextId = Math.max(0, ...messages.map(m => m.id)) + 1;
     const now = new Date();
     const time = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
     const updatedMessages = [
@@ -35,7 +35,7 @@ export default function ChatScreen({ navigate }) {
         { id: nextId + 1, role: 'assistant', text: replyText, time },
       ]);
     } catch (err) {
-      setError(err?.error || 'Chat service error. Please try again.');
+      setError(err?.error || err?.message || 'Chat service error. Please try again.');
       setMessages(prev => [
         ...prev,
         {
@@ -109,26 +109,24 @@ export default function ChatScreen({ navigate }) {
                 </div>
               )}
 
-              <div className="mt-4 border-t border-gray-100 pt-4">
-                <div className="flex items-end gap-3">
-                  <div className="flex-1">
-                    <label className="text-xs font-semibold text-gray-500">Message</label>
-                    <textarea
-                      value={input}
-                      onChange={(e) => setInput(e.target.value)}
-                      rows={3}
-                      placeholder="Describe symptoms, plant type, or ask a question..."
-                      className="mt-2 w-full rounded-xl border border-gray-200 px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-green-500"
-                    />
-                  </div>
-                  <button
-                    onClick={handleSend}
-                    disabled={isSending}
-                    className="h-12 px-5 rounded-xl bg-green-600 text-white font-semibold hover:bg-green-700 disabled:opacity-60 disabled:cursor-not-allowed"
-                  >
-                    {isSending ? 'Sending...' : 'Send'}
-                  </button>
+              <div className="mt-4 border-t border-gray-100 pt-4 space-y-3">
+                <div>
+                  <label className="text-xs font-semibold text-gray-500">Message</label>
+                  <textarea
+                    value={input}
+                    onChange={(e) => setInput(e.target.value)}
+                    rows={3}
+                    placeholder="Describe symptoms, plant type, or ask a question..."
+                    className="mt-2 w-full rounded-xl border border-gray-200 px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-green-500"
+                  />
                 </div>
+                <button
+                  onClick={handleSend}
+                  disabled={isSending}
+                  className="w-full sm:w-auto h-12 px-5 rounded-xl bg-green-600 text-white font-semibold hover:bg-green-700 disabled:opacity-60 disabled:cursor-not-allowed"
+                >
+                  {isSending ? 'Sending...' : 'Send'}
+                </button>
               </div>
             </div>
           </div>

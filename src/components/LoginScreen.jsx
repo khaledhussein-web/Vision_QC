@@ -21,7 +21,7 @@ export default function LoginScreen({ onLogin, onRegister, onForgotPassword, onV
       
       // Check if admin
       const isAdmin = email === 'admin@visionqc.com';
-      onLogin(isAdmin, response.user_id);
+      onLogin(isAdmin, response.user_id, email);
     } catch (err) {
       setError(err.error || 'Login failed. Please try again.');
     } finally {

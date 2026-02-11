@@ -14,7 +14,8 @@ require('dotenv').config();
 const app = express();
 const PORT = process.env.PORT || 5000;
 const PYTHON_SERVICE_URL = process.env.PYTHON_SERVICE_URL || 'http://127.0.0.1:8000';
-const OPENAI_MODEL = process.env.OPENAI_MODEL || 'gpt-4.1-mini';
+const OPENAI_MODEL = process.env.OPENAI_MODEL || 'gpt-4o-mini';
+const OPENAI_FALLBACK_MODEL = process.env.OPENAI_FALLBACK_MODEL || '';
 
 // Middleware
 app.use(cors());
@@ -335,16 +336,50 @@ app.post('/api/chat', authenticateToken, async (req, res) => {
       { role: 'user', content: trimmedMessage },
     ];
 
-    const response = await client.responses.create({
-      model: OPENAI_MODEL,
-      input,
-    });
+    const fallbackModel =
+      OPENAI_FALLBACK_MODEL && OPENAI_FALLBACK_MODEL !== OPENAI_MODEL
+        ? OPENAI_FALLBACK_MODEL
+        : null;
+
+    const isModelError = (err) => {
+      const message = String(err?.error?.message || err?.message || '').toLowerCase();
+      const code = String(err?.error?.code || err?.code || '').toLowerCase();
+      const status = Number(err?.status || err?.error?.status || 0);
+      return status === 404 || code.includes('model') || message.includes('model');
+    };
+
+    let response;
+    try {
+      response = await client.responses.create({
+        model: OPENAI_MODEL,
+        input,
+      });
+    } catch (error) {
+      if (fallbackModel && isModelError(error)) {
+        response = await client.responses.create({
+          model: fallbackModel,
+          input,
+        });
+      } else {
+        throw error;
+      }
+    }
 
     const reply = response.output_text || 'Sorry, I could not generate a response.';
     return res.json({ reply });
   } catch (error) {
-    console.error('Chat error:', error?.message || error);
-    return res.status(500).json({ error: 'Chat service error' });
+    const status = Number(error?.status || error?.error?.status || 500);
+    const message = error?.error?.message || error?.message || 'Chat service error';
+    console.error('Chat error:', {
+      status,
+      message,
+      code: error?.error?.code || error?.code,
+      type: error?.error?.type || error?.type,
+    });
+    const clientMessage = process.env.NODE_ENV === 'production'
+      ? 'Chat service error'
+      : message;
+    return res.status(status).json({ error: clientMessage });
   }
 });
 
