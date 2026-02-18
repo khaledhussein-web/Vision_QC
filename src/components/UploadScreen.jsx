@@ -173,7 +173,7 @@ export default function UploadScreen({
         toast.error('Prediction service returned no label');
       }
     } catch (error) {
-      toast.error('Failed to analyze image');
+      toast.error(error?.detail ? `Failed to analyze image: ${error.detail}` : 'Failed to analyze image');
       console.error('Analyze error:', error);
     } finally {
       setUploading(false);

@@ -35,6 +35,11 @@ export default function ChatScreen({ navigate }) {
         { id: nextId + 1, role: 'assistant', text: replyText, time },
       ]);
     } catch (err) {
+      if (err?.status === 401) {
+        setError('Your session expired. Please sign in again.');
+        navigate('login');
+        return;
+      }
       setError(err?.error || err?.message || 'Chat service error. Please try again.');
       setMessages(prev => [
         ...prev,

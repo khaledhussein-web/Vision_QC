@@ -2,7 +2,7 @@
 // Real API endpoints (no mock responses)
 
 // API base URL (override with VITE_API_BASE_URL if needed)
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:5000';
+const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL ?? '').replace(/\/$/, '');
 
 // Auth state
 let authToken = null;
@@ -31,7 +31,8 @@ const parseResponse = async (response) => {
   if (!response.ok) {
     throw {
       status: response.status,
-      error: data.error || 'Request failed'
+      error: data.error || 'Request failed',
+      detail: data.detail || null
     };
   }
 
@@ -301,6 +302,55 @@ export async function getAdminUsers(page = 1, perPage = 20) {
 }
 
 /**
+ * Admin: Create User
+ * POST /api/admin/users
+ */
+export async function createAdminUser(payload) {
+  const response = await fetch(`${API_BASE_URL}/api/admin/users`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      ...getAuthHeaders()
+    },
+    body: JSON.stringify(payload || {})
+  });
+
+  return parseResponse(response);
+}
+
+/**
+ * Admin: Update User
+ * PATCH /api/admin/users/{user_id}
+ */
+export async function updateAdminUser(userId, payload) {
+  const response = await fetch(`${API_BASE_URL}/api/admin/users/${userId}`, {
+    method: 'PATCH',
+    headers: {
+      'Content-Type': 'application/json',
+      ...getAuthHeaders()
+    },
+    body: JSON.stringify(payload || {})
+  });
+
+  return parseResponse(response);
+}
+
+/**
+ * Admin: Delete User
+ * DELETE /api/admin/users/{user_id}
+ */
+export async function deleteAdminUser(userId) {
+  const response = await fetch(`${API_BASE_URL}/api/admin/users/${userId}`, {
+    method: 'DELETE',
+    headers: {
+      ...getAuthHeaders()
+    }
+  });
+
+  return parseResponse(response);
+}
+
+/**
  * Admin: List Images
  * GET /api/admin/images
  */
@@ -340,6 +390,26 @@ export async function getAdminReports(page = 1, perPage = 20) {
   return parseResponse(response);
 }
 
+/**
+ * Admin: Generate Report
+ * POST /api/admin/reports/generate
+ */
+export async function generateAdminReport(reportType = 'images', format = 'csv') {
+  const response = await fetch(`${API_BASE_URL}/api/admin/reports/generate`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      ...getAuthHeaders()
+    },
+    body: JSON.stringify({
+      report_type: reportType,
+      format
+    })
+  });
+
+  return parseResponse(response);
+}
+
 // Helper function to set auth token (useful for testing)
 export function setAuthToken(token) {
   authToken = token;
@@ -359,3 +429,7 @@ export function isAdminUser() {
 export function setCurrentUserId(userId) {
   currentUserId = userId;
 }
+
+
+
+

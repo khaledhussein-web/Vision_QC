@@ -177,16 +177,57 @@ export default function AdminDashboard({ navigate }) {
             <h1 className="text-2xl font-bold text-gray-900">Admin Dashboard</h1>
             <p className="text-sm text-gray-500">Manage users, image activity, and reports.</p>
           </div>
-          <button
-            onClick={() => navigate('home')}
-            className="bg-green-600 text-white py-2 px-4 rounded hover:bg-green-700"
-          >
-            Back to Home
-          </button>
+          <div className="flex flex-wrap gap-2">
+            <button
+              onClick={() => navigate('admin-access')}
+              className="bg-white text-gray-700 py-2 px-4 rounded border border-gray-200 hover:border-green-500"
+            >
+              Access Control
+            </button>
+            <button
+              onClick={() => navigate('admin-reports')}
+              className="bg-white text-gray-700 py-2 px-4 rounded border border-gray-200 hover:border-green-500"
+            >
+              Reports
+            </button>
+            <button
+              onClick={() => navigate('admin-dashboard')}
+              className="bg-green-600 text-white py-2 px-4 rounded hover:bg-green-700"
+            >
+              Back to Home
+            </button>
+          </div>
         </div>
       </div>
 
       <div className="max-w-6xl mx-auto px-6 py-8 space-y-6">
+        <div className="grid gap-4 md:grid-cols-3">
+          <button
+            onClick={() => navigate('admin-access')}
+            className="bg-white rounded-2xl border border-gray-100 p-5 text-left shadow-sm hover:shadow-md transition"
+          >
+            <div className="text-sm text-gray-500">Access</div>
+            <div className="text-lg font-semibold text-gray-900">Manage Users</div>
+            <p className="text-xs text-gray-500 mt-2">Review roles, status, and activity.</p>
+          </button>
+          <button
+            onClick={() => navigate('admin-images')}
+            className="bg-white rounded-2xl border border-gray-100 p-5 text-left shadow-sm hover:shadow-md transition"
+          >
+            <div className="text-sm text-gray-500">Images</div>
+            <div className="text-lg font-semibold text-gray-900">Image Management</div>
+            <p className="text-xs text-gray-500 mt-2">Review uploads and predictions.</p>
+          </button>
+          <button
+            onClick={() => navigate('admin-reports')}
+            className="bg-white rounded-2xl border border-gray-100 p-5 text-left shadow-sm hover:shadow-md transition"
+          >
+            <div className="text-sm text-gray-500">Reports</div>
+            <div className="text-lg font-semibold text-gray-900">Generate Reports</div>
+            <p className="text-xs text-gray-500 mt-2">Download operator reports.</p>
+          </button>
+        </div>
+
         <div className="flex flex-wrap gap-2">
           {tabs.map((tab) => (
             <button

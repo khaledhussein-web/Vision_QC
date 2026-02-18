@@ -19,9 +19,16 @@ export default function LoginScreen({ onLogin, onRegister, onForgotPassword, onV
     try {
       const response = await login(email, password);
       
-      // Check if admin
-      const isAdmin = email === 'admin@visionqc.com';
-      onLogin(isAdmin, response.user_id, email);
+      // Check if admin via backend role (fallback to email only if role missing)
+      const role = String(response.role || '').toLowerCase();
+      const normalizedEmail = String(response.email || email || '').trim().toLowerCase();
+      const isAdmin = role === 'admin' || (!role && normalizedEmail === 'admin@visionqc.com');
+      onLogin(
+        isAdmin,
+        response.user_id,
+        response.email || email,
+        response.full_name || response.name || ''
+      );
     } catch (err) {
       setError(err.error || 'Login failed. Please try again.');
     } finally {

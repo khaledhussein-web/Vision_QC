@@ -18,67 +18,44 @@ import ReportsScreen from './components/admin/ReportsScreen';
 import AccessControl from './components/admin/AccessControl';
 import APIDocumentation from './components/APIDocumentation';
 import SEOHead from './components/SEOHead';
+import { createAdminUser, updateAdminUser, deleteAdminUser } from './utils/api';
 
 export default function App() {
   const [currentScreen, setCurrentScreen] = useState('splash');
   const [selectedImage, setSelectedImage] = useState(null);
   const [selectedImageId, setSelectedImageId] = useState(null);
+  const [selectedAdminImage, setSelectedAdminImage] = useState(null);
   const [currentPrediction, setCurrentPrediction] = useState(null);
   const [uploadResetToken, setUploadResetToken] = useState(0);
   const [isAdmin, setIsAdmin] = useState(false);
   const [userId, setUserId] = useState(null);
   const [userEmail, setUserEmail] = useState('');
-  const [users, setUsers] = useState([
-    {
-      id: 1,
-      name: 'Admin User',
-      email: 'admin@visionqc.com',
-      role: 'admin',
-      joinDate: '2025-01-01',
-    },
-    {
-      id: 2,
-      name: 'Sarah Johnson',
-      email: 'sarah@visionqc.com',
-      role: 'annotator',
-      joinDate: '2025-02-15',
-    },
-    {
-      id: 3,
-      name: 'Mike Chen',
-      email: 'mike@visionqc.com',
-      role: 'annotator',
-      joinDate: '2025-03-10',
-    },
-    {
-      id: 4,
-      name: 'Emily Davis',
-      email: 'emily@visionqc.com',
-      role: 'user',
-      joinDate: '2025-05-20',
-    },
-    {
-      id: 5,
-      name: 'John Smith',
-      email: 'john@example.com',
-      role: 'user',
-      joinDate: '2025-06-01',
-    },
-  ]);
+  const [userName, setUserName] = useState('');
 
   const navigate = (screen, options = {}) => {
-    if (screen === 'upload') {
+    let targetScreen = screen;
+
+    // admin users should not be redirected to the regular user dashboard.
+    if (isAdmin && screen === 'home') {
+      targetScreen = 'admin-dashboard';
+    }
+
+    if (targetScreen === 'upload') {
       setSelectedImage(null);
       setCurrentPrediction(null);
       setUploadResetToken(prev => prev + 1);
     }
-    setCurrentScreen(screen);
+    if (targetScreen === 'admin-images') {
+      setSelectedAdminImage(null);
+    }
+    setCurrentScreen(targetScreen);
   };
 
-  const handleLogin = (isAdminUser, userId, email) => {
+  const handleLogin = (isAdminUser, userId, email, fullName) => {
     setIsAdmin(isAdminUser);
     setUserId(userId);
     setUserEmail(email || '');
+    setUserName(fullName || '');
     if (isAdminUser) {
       navigate('admin-dashboard');
     } else {
@@ -86,23 +63,30 @@ export default function App() {
     }
   };
 
-  const handleAddUser = (user) => {
-    const newUser = {
-      ...user,
-      id: Math.max(...users.map(u => u.id), 0) + 1,
-      joinDate: new Date().toISOString().split('T')[0],
-    };
-    setUsers([...users, newUser]);
+  const handleAddUser = async (user) => {
+    const fullName = String(user?.full_name || user?.name || '').trim();
+    const email = String(user?.email || '').trim().toLowerCase();
+    const password = String(user?.password || '');
+    const passwordConfirm = String(user?.password_confirm || user?.passwordConfirm || password);
+    const role = String(user?.role || 'user').toLowerCase();
+    const status = String(user?.status || 'ACTIVE').trim().toUpperCase();
+
+    return createAdminUser({
+      full_name: fullName,
+      email,
+      password,
+      password_confirm: passwordConfirm,
+      role,
+      status
+    });
   };
 
-  const handleUpdateUser = (id, updates) => {
-    setUsers(users.map(user => 
-      user.id === id ? { ...user, ...updates } : user
-    ));
+  const handleUpdateUser = async (id, updates) => {
+    return updateAdminUser(id, updates || {});
   };
 
-  const handleDeleteUser = (id) => {
-    setUsers(users.filter(user => user.id !== id));
+  const handleDeleteUser = async (id) => {
+    return deleteAdminUser(id);
   };
 
   // Get SEO data based on current screen
@@ -236,25 +220,41 @@ export default function App() {
       case 'bookmarks':
         return <BookmarksScreen navigate={navigate} userId={userId} />;
       case 'profile':
-        return <ProfileScreen navigate={navigate} userId={userId} userEmail={userEmail} />;
+        return <ProfileScreen navigate={navigate} userId={userId} userEmail={userEmail} userName={userName} />;
       case 'payment':
         return <PaymentScreen navigate={navigate} userId={userId} userEmail={userEmail} />;
       case 'admin-dashboard':
         return <AdminDashboard navigate={navigate} />;
       case 'admin-images':
-        return <ImageManagement navigate={navigate} onSelectImage={(id) => { setSelectedImageId(id); navigate('admin-image-detail'); }} />;
+        return (
+          <ImageManagement
+            navigate={navigate}
+            onSelectImage={(image) => {
+              setSelectedImageId(image?.image_id ?? null);
+              setSelectedAdminImage(image || null);
+              navigate('admin-image-detail');
+            }}
+          />
+        );
       case 'admin-image-detail':
-        return <ImageDetail navigate={navigate} imageId={selectedImageId} />;
+        return (
+          <ImageDetail
+            navigate={navigate}
+            imageId={selectedImageId}
+            image={selectedAdminImage}
+          />
+        );
       case 'admin-reports':
         return <ReportsScreen navigate={navigate} />;
       case 'admin-access':
-        return <AccessControl 
-          navigate={navigate} 
-          users={users}
-          onAddUser={handleAddUser}
-          onUpdateUser={handleUpdateUser}
-          onDeleteUser={handleDeleteUser}
-        />; 
+        return (
+          <AccessControl
+            navigate={navigate}
+            onAddUser={handleAddUser}
+            onUpdateUser={handleUpdateUser}
+            onDeleteUser={handleDeleteUser}
+          />
+        ); 
       case 'api-docs':
         return <APIDocumentation navigate={navigate} />;
       default:
