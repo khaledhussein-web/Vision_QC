@@ -6,10 +6,9 @@ const cors = require('cors');
 const multer = require('multer');
 const fetch = (...args) => import('node-fetch').then(({ default: fetch }) => fetch(...args));
 const FormData = require('form-data');
-const OpenAI = require('openai');
 const path = require('path');
 const fs = require('fs');
-require('dotenv').config();
+require('dotenv').config({ path: path.join(__dirname, '.env') });
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -18,9 +17,9 @@ const HOST = process.env.HOST || '0.0.0.0';
 // Base URL for your FastAPI/Python prediction service
 const PYTHON_SERVICE_URL = process.env.PYTHON_SERVICE_URL || 'http://127.0.0.1:8000';
 
-// Models used by OpenAI endpoint (main + optional fallback)
-const OPENAI_MODEL = process.env.OPENAI_MODEL || 'gpt-4o-mini';
-const OPENAI_FALLBACK_MODEL = process.env.OPENAI_FALLBACK_MODEL || '';
+// Ollama config for local chat endpoint
+const OLLAMA_BASE_URL = String(process.env.OLLAMA_BASE_URL || 'http://localhost:11434').trim().replace(/\/$/, '');
+const OLLAMA_MODEL = String(process.env.OLLAMA_MODEL || 'llama3').trim();
 const DEFAULT_LOCAL_PYTHON_SERVICE_URL = 'http://127.0.0.1:8000';
 
 // -------------------- Middleware --------------------
@@ -96,6 +95,31 @@ const extractOriginalQuestion = (message) => {
   }
 
   return text;
+};
+
+const buildOllamaPrompt = (history, userMessage) => {
+  const systemPrompt =
+    'You are VisionQC, an AI assistant for plant disease detection. ' +
+    'Provide concise, practical guidance. If unsure, ask for a clear photo and suggest using the Upload screen for analysis. ' +
+    'Avoid medical claims; this is general plant-care advice.';
+
+  const historyText = (Array.isArray(history) ? history : [])
+    .map((item) => {
+      const role = item.role === 'assistant' ? 'Assistant' : 'User';
+      const content = String(item.content || '').trim();
+      return content ? `${role}: ${content}` : '';
+    })
+    .filter(Boolean)
+    .join('\n');
+
+  return [
+    `System: ${systemPrompt}`,
+    historyText,
+    `User: ${String(userMessage || '').trim()}`,
+    'Assistant:'
+  ]
+    .filter(Boolean)
+    .join('\n\n');
 };
 
 const normalizeBaseUrl = (urlValue) => String(urlValue || '').trim().replace(/\/$/, '');
@@ -536,30 +560,29 @@ app.post('/api/analyze', authenticateToken, upload.single('image'), async (req, 
   }
 });
 
-// -------------------- Chat endpoint (OpenAI) --------------------
+// -------------------- Chat endpoint (Ollama) --------------------
 
 // POST /api/chat
 // Purpose:
 // - accept message (+ optional history) from frontend
-// - call OpenAI Responses API
+// - call Ollama /api/generate
 // - return assistant reply
 // Protected by authenticateToken.
 app.post('/api/chat', authenticateToken, async (req, res) => {
-  const apiKey = process.env.OPENAI_API_KEY;
-
   // message: user text
   // history: optional array of previous messages (role/content)
-  const { message, history } = req.body || {};
+  const { message, history, chat_id: chatIdFromBody, image_id: imageIdFromBody, prediction_id: predictionIdFromBody, topic } = req.body || {};
+  const requesterId = Number(req.user?.user_id);
+  const requesterRole = String(req.user?.role || '').toLowerCase();
+  const isAdmin = requesterRole === 'admin';
 
   // Basic validation for message
   const trimmedMessage = extractOriginalQuestion(message);
   if (!trimmedMessage) {
     return res.status(400).json({ error: 'Message is required' });
   }
-
-  // If key is missing, still return a useful fallback message.
-  if (!apiKey) {
-    return res.json({ reply: buildFallbackChatReply(trimmedMessage), source: 'fallback' });
+  if (!requesterId) {
+    return res.status(401).json({ error: 'Invalid token payload' });
   }
 
   // Keep only last 8 valid history messages (to limit tokens/cost)
@@ -569,90 +592,127 @@ app.post('/api/chat', authenticateToken, async (req, res) => {
         .slice(-8)
     : [];
 
+  let reply = '';
+  let source = 'ollama';
+  let providerErrorMessage = '';
+
   try {
-    // Create OpenAI client using api key
-    const client = new OpenAI({ apiKey });
+    const prompt = buildOllamaPrompt(safeHistory, trimmedMessage);
+    const ollamaResponse = await fetch(`${OLLAMA_BASE_URL}/api/generate`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: OLLAMA_MODEL,
+        prompt,
+        stream: false
+      })
+    });
 
-    // Build conversation input:
-    // - system message defines assistant behavior
-    // - include recent history
-    // - append the new user message
-    const input = [
-      {
-        role: 'system',
-        content:
-          'You are VisionQC, an AI assistant for plant disease detection. Provide concise, practical guidance. ' +
-          'If unsure, ask for a clear photo and suggest using the Upload screen for analysis. ' +
-          'Avoid medical claims; this is general plant-care advice.',
-      },
-      ...safeHistory.map(item => ({
-        role: item.role === 'assistant' ? 'assistant' : 'user',
-        content: item.content,
-      })),
-      { role: 'user', content: trimmedMessage },
-    ];
-
-    // Decide if fallback model is usable (only if different from main model)
-    const envFallbackModel = String(OPENAI_FALLBACK_MODEL || '').trim();
-    const defaultFallbackModel = 'gpt-4o-mini';
-    const resolvedFallbackModel = envFallbackModel || defaultFallbackModel;
-    const fallbackModel =
-      resolvedFallbackModel && resolvedFallbackModel !== OPENAI_MODEL
-        ? resolvedFallbackModel
-        : null;
-
-    // Helper: detect errors that indicate "model not found" / wrong model
-    const isModelError = (err) => {
-      const message = String(err?.error?.message || err?.message || '').toLowerCase();
-      const code = String(err?.error?.code || err?.code || '').toLowerCase();
-      const status = Number(err?.status || err?.error?.status || 0);
-      return status === 404 || code.includes('model') || message.includes('model');
-    };
-
-    let response;
-
-    // Try main model first
-    try {
-      response = await client.responses.create({
-        model: OPENAI_MODEL,
-        input,
-      });
-    } catch (error) {
-      // If it's a model-related error and fallback exists -> try fallback model
-      if (fallbackModel && isModelError(error)) {
-        response = await client.responses.create({
-          model: fallbackModel,
-          input,
-        });
-      } else {
-        // Otherwise rethrow to outer catch
-        throw error;
-      }
+    if (!ollamaResponse.ok) {
+      const errorBody = await ollamaResponse.text();
+      throw new Error(`Ollama error ${ollamaResponse.status}: ${errorBody}`);
     }
 
-    // output_text is a convenience property containing plain text output
-    const reply = response.output_text || 'Sorry, I could not generate a response.';
-    return res.json({ reply });
+    const data = await ollamaResponse.json();
+    reply = String(data?.response || '').trim() || 'Sorry, I could not generate a response.';
   } catch (error) {
-    // Convert OpenAI error into response status/message
-    const status = Number(error?.status || error?.error?.status || 500);
-    const message = error?.error?.message || error?.message || 'Chat service error';
-
-    // Detailed server-side logging
+    providerErrorMessage = error?.message || 'Chat service error';
     console.error('Chat error:', {
-      status,
-      message,
-      code: error?.error?.code || error?.code,
-      type: error?.error?.type || error?.type,
+      message: providerErrorMessage,
+      ollamaUrl: OLLAMA_BASE_URL,
+      ollamaModel: OLLAMA_MODEL
     });
+    reply = buildFallbackChatReply(trimmedMessage);
+    source = 'fallback';
+  }
 
-    // Return graceful fallback to keep chat usable even when provider fails.
-    return res.json({
-      reply: buildFallbackChatReply(trimmedMessage),
-      source: 'fallback',
-      error: process.env.NODE_ENV === 'production' ? 'Chat provider unavailable' : message
+  let chatId = null;
+
+  try {
+    const dbClient = await pool.connect();
+
+    try {
+      await dbClient.query('BEGIN');
+
+      const requestedChatId = Number(chatIdFromBody);
+      if (Number.isInteger(requestedChatId) && requestedChatId > 0) {
+        const existingChatQuery = `
+          SELECT chat_id, user_id
+          FROM ai_chat
+          WHERE chat_id = $1
+        `;
+        const existingChatResult = await dbClient.query(existingChatQuery, [requestedChatId]);
+
+        if (existingChatResult.rows.length === 0) {
+          throw new Error('CHAT_NOT_FOUND');
+        }
+
+        const ownerUserId = Number(existingChatResult.rows[0].user_id);
+        if (!isAdmin && ownerUserId !== requesterId) {
+          throw new Error('CHAT_FORBIDDEN');
+        }
+
+        chatId = requestedChatId;
+      } else {
+        const parsedImageId = Number(imageIdFromBody);
+        const parsedPredictionId = Number(predictionIdFromBody);
+        const normalizedTopic = String(topic || 'general').trim().slice(0, 80) || 'general';
+
+        const imageId = Number.isInteger(parsedImageId) && parsedImageId > 0 ? parsedImageId : null;
+        const predictionId =
+          Number.isInteger(parsedPredictionId) && parsedPredictionId > 0 ? parsedPredictionId : null;
+
+        const createChatQuery = `
+          INSERT INTO ai_chat (user_id, image_id, prediction_id, topic)
+          VALUES ($1, $2, $3, $4)
+          RETURNING chat_id
+        `;
+        const createChatResult = await dbClient.query(createChatQuery, [
+          requesterId,
+          imageId,
+          predictionId,
+          normalizedTopic
+        ]);
+        chatId = createChatResult.rows[0].chat_id;
+      }
+
+      const insertMessageQuery = `
+        INSERT INTO ai_chatmessage (chat_id, sender, content)
+        VALUES ($1, $2, $3)
+      `;
+      await dbClient.query(insertMessageQuery, [chatId, 'USER', trimmedMessage]);
+      await dbClient.query(insertMessageQuery, [chatId, 'AI', reply]);
+
+      await dbClient.query('COMMIT');
+    } catch (dbError) {
+      await dbClient.query('ROLLBACK');
+      throw dbError;
+    } finally {
+      dbClient.release();
+    }
+  } catch (dbError) {
+    if (dbError.message === 'CHAT_NOT_FOUND') {
+      return res.status(404).json({ error: 'Chat not found' });
+    }
+    if (dbError.message === 'CHAT_FORBIDDEN') {
+      return res.status(403).json({ error: 'Access denied' });
+    }
+
+    console.error('Chat persistence error:', dbError);
+    return res.status(500).json({
+      error: 'Failed to store chat messages',
+      detail: process.env.NODE_ENV === 'production' ? null : dbError.message
     });
   }
+
+  return res.json({
+    reply,
+    source,
+    chat_id: chatId,
+    ...(providerErrorMessage && process.env.NODE_ENV !== 'production'
+      ? { error: providerErrorMessage }
+      : {})
+  });
 });
 
 // -------------------- Bookmark toggle endpoint --------------------
