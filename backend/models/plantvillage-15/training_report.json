@@ -1,0 +1,43 @@
+{
+  "data_root": "backend\\data\\plantdisease\\PlantVillage\\PlantVillage",
+  "base_model": "linkanjarad/mobilenet_v2_1.0_224-plant-disease-identification",
+  "output_dir": "backend\\models\\plantvillage-15",
+  "epochs": 1,
+  "batch_size": 32,
+  "lr": 0.0003,
+  "weight_decay": 0.0001,
+  "val_split": 0.2,
+  "seed": 42,
+  "freeze_backbone": true,
+  "train_count": 16516,
+  "val_count": 4122,
+  "classes": [
+    "Pepper__bell___Bacterial_spot",
+    "Pepper__bell___healthy",
+    "Potato___Early_blight",
+    "Potato___Late_blight",
+    "Potato___healthy",
+    "Tomato_Bacterial_spot",
+    "Tomato_Early_blight",
+    "Tomato_Late_blight",
+    "Tomato_Leaf_Mold",
+    "Tomato_Septoria_leaf_spot",
+    "Tomato_Spider_mites_Two_spotted_spider_mite",
+    "Tomato__Target_Spot",
+    "Tomato__Tomato_YellowLeaf__Curl_Virus",
+    "Tomato__Tomato_mosaic_virus",
+    "Tomato_healthy"
+  ],
+  "best_epoch": 1,
+  "best_val_acc": 0.706938,
+  "history": [
+    {
+      "epoch": 1,
+      "train_loss": 0.734704,
+      "train_acc": 0.771797,
+      "val_loss": 0.953993,
+      "val_acc": 0.706938,
+      "seconds": 1737.46
+    }
+  ]
+}

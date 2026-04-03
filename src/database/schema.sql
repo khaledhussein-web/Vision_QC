@@ -237,6 +237,40 @@ CREATE INDEX idx_ai_chat_user_id ON ai_chat(user_id);
 CREATE INDEX idx_ai_chatmessage_chat_id_created_at
   ON ai_chatmessage (chat_id, created_at);
 
+-- =========================
+-- 10) retraining_queue (Low-score flagging for retraining)
+-- =========================
+
+CREATE TABLE retraining_queue (
+  queue_id          INT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  prediction_id     INT NOT NULL,
+  flagged_by_user_id INT NOT NULL,
+
+  status            VARCHAR(20) NOT NULL DEFAULT 'PENDING', -- PENDING / APPROVED / REJECTED
+  
+  confidence_score  DECIMAL(6,4) NOT NULL, -- Store the confidence at time of flagging
+  reason            VARCHAR(255) NULL,     -- User's reason for flagging (optional)
+  
+  admin_id          INT NULL,              -- Admin who reviewed it
+  admin_notes       TEXT NULL,
+  reviewed_at       TIMESTAMP NULL,
+
+  created_at        TIMESTAMP NOT NULL DEFAULT NOW(),
+  updated_at        TIMESTAMP NOT NULL DEFAULT NOW(),
+
+  CONSTRAINT fk_rq_prediction
+    FOREIGN KEY (prediction_id) REFERENCES prediction(prediction_id) ON DELETE CASCADE,
+  CONSTRAINT fk_rq_user
+    FOREIGN KEY (flagged_by_user_id) REFERENCES users(user_id) ON DELETE CASCADE,
+  CONSTRAINT fk_rq_admin
+    FOREIGN KEY (admin_id) REFERENCES users(user_id) ON DELETE SET NULL
+);
+
+CREATE INDEX idx_retraining_queue_status ON retraining_queue(status);
+CREATE INDEX idx_retraining_queue_prediction_id ON retraining_queue(prediction_id);
+CREATE INDEX idx_retraining_queue_user_id ON retraining_queue(flagged_by_user_id);
+CREATE INDEX idx_retraining_queue_created_at ON retraining_queue(created_at DESC);
+
 INSERT INTO role (name) VALUES ('USER')  ON CONFLICT (name) DO NOTHING;
 INSERT INTO role (name) VALUES ('ADMIN') ON CONFLICT (name) DO NOTHING;
 

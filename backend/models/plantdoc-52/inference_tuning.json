@@ -1,0 +1,11 @@
+{
+  "model_id": "backend\\models\\plantdoc-52",
+  "low_confidence_threshold": 0.55,
+  "low_margin_threshold": 0.12,
+  "expected_accuracy": 0.800373,
+  "coverage": 0.581597,
+  "selected_count": 4829,
+  "target_accuracy": 0.8,
+  "target_met": true,
+  "selection_strategy": "max_coverage_at_target_accuracy"
+}

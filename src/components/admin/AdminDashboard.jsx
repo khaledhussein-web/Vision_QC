@@ -1,54 +1,84 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Loader2 } from 'lucide-react';
-import { getAdminImages, getAdminReports, getAdminUsers } from '../../utils/api';
+import {
+  Activity,
+  BrainCircuit,
+  FileText,
+  Images,
+  Loader2,
+  ShieldCheck,
+  Users
+} from 'lucide-react';
+import {
+  getAdminImages,
+  getAdminReports,
+  getAdminUsers,
+  getRetrainingQueue
+} from '../../utils/api';
+import RetrainingQueueScreen from './RetrainingQueueScreen';
+
+const PAGE_SIZE = 10;
 
 const formatDate = (value) => {
-  if (!value) return '—';
+  if (!value) return '-';
   const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? '—' : date.toLocaleString();
+  return Number.isNaN(date.getTime()) ? '-' : date.toLocaleString();
 };
 
 const formatConfidence = (confidence) => {
-  if (confidence === null || confidence === undefined) return '—';
+  if (confidence === null || confidence === undefined) return '-';
   const numeric = Number(confidence);
-  if (Number.isNaN(numeric)) return '—';
+  if (Number.isNaN(numeric)) return '-';
   return `${Math.round(numeric * 100)}%`;
 };
 
-const TableHeader = ({ title, subtitle }) => (
-  <div className="flex flex-col gap-1">
-    <h2 className="text-lg font-semibold text-gray-900">{title}</h2>
-    {subtitle && <p className="text-sm text-gray-500">{subtitle}</p>}
-  </div>
-);
-
 const EmptyState = ({ message }) => (
-  <div className="border border-dashed border-gray-200 rounded-xl p-6 text-center text-sm text-gray-500">
+  <div className="rounded-2xl border border-dashed border-gray-300 bg-gray-50 px-6 py-10 text-center text-sm text-gray-500">
     {message}
   </div>
 );
 
-const Pagination = ({ page, totalPages, onPrev, onNext }) => (
-  <div className="flex items-center justify-between pt-4 text-sm text-gray-600">
-    <button
-      onClick={onPrev}
-      disabled={page === 1}
-      className="px-3 py-1 rounded border border-gray-200 disabled:opacity-50"
-    >
-      Previous
-    </button>
-    <span>
-      Page {page} of {totalPages}
-    </span>
-    <button
-      onClick={onNext}
-      disabled={page === totalPages}
-      className="px-3 py-1 rounded border border-gray-200 disabled:opacity-50"
-    >
-      Next
-    </button>
-  </div>
+const TableCard = ({ title, subtitle, children }) => (
+  <section className="rounded-3xl border border-green-100 bg-white p-6 shadow-sm">
+    <header className="mb-5 flex flex-col gap-1">
+      <h2 className="text-lg font-semibold text-gray-900">{title}</h2>
+      {subtitle ? <p className="text-sm text-gray-500">{subtitle}</p> : null}
+    </header>
+    {children}
+  </section>
 );
+
+const Pagination = ({ page, totalPages, onPrev, onNext }) => {
+  if (totalPages <= 1) return null;
+
+  return (
+    <div className="mt-5 flex items-center justify-between border-t border-gray-200 pt-4 text-sm text-gray-600">
+      <button
+        onClick={onPrev}
+        disabled={page <= 1}
+        className="rounded-lg border border-gray-300 bg-white px-3 py-1.5 font-medium transition hover:border-green-500 hover:text-green-700 disabled:cursor-not-allowed disabled:opacity-45"
+      >
+        Previous
+      </button>
+      <span>
+        Page {page} of {totalPages}
+      </span>
+      <button
+        onClick={onNext}
+        disabled={page >= totalPages}
+        className="rounded-lg border border-gray-300 bg-white px-3 py-1.5 font-medium transition hover:border-green-500 hover:text-green-700 disabled:cursor-not-allowed disabled:opacity-45"
+      >
+        Next
+      </button>
+    </div>
+  );
+};
+
+const tabMeta = {
+  users: { label: 'Users', icon: Users },
+  images: { label: 'Images', icon: Images },
+  reports: { label: 'Reports', icon: FileText },
+  retraining: { label: 'Retraining', icon: BrainCircuit }
+};
 
 export default function AdminDashboard({ navigate }) {
   const [activeTab, setActiveTab] = useState('users');
@@ -58,7 +88,8 @@ export default function AdminDashboard({ navigate }) {
     error: '',
     data: [],
     page: 1,
-    totalPages: 1
+    totalPages: 1,
+    total: 0
   });
 
   const [imagesState, setImagesState] = useState({
@@ -66,7 +97,8 @@ export default function AdminDashboard({ navigate }) {
     error: '',
     data: [],
     page: 1,
-    totalPages: 1
+    totalPages: 1,
+    total: 0
   });
 
   const [reportsState, setReportsState] = useState({
@@ -74,16 +106,20 @@ export default function AdminDashboard({ navigate }) {
     error: '',
     data: [],
     page: 1,
-    totalPages: 1
+    totalPages: 1,
+    total: 0
   });
+
+  const [pendingRetraining, setPendingRetraining] = useState(null);
 
   const tabs = useMemo(
     () => [
-      { key: 'users', label: 'Users' },
-      { key: 'images', label: 'Images' },
-      { key: 'reports', label: 'Reports' }
+      { key: 'users', ...tabMeta.users, count: usersState.total },
+      { key: 'images', ...tabMeta.images, count: imagesState.total },
+      { key: 'reports', ...tabMeta.reports, count: reportsState.total },
+      { key: 'retraining', ...tabMeta.retraining, count: pendingRetraining ?? 0 }
     ],
-    []
+    [usersState.total, imagesState.total, reportsState.total, pendingRetraining]
   );
 
   useEffect(() => {
@@ -92,20 +128,21 @@ export default function AdminDashboard({ navigate }) {
     const loadUsers = async () => {
       setUsersState((prev) => ({ ...prev, loading: true, error: '' }));
       try {
-        const response = await getAdminUsers(usersState.page, 10);
+        const response = await getAdminUsers(usersState.page, PAGE_SIZE);
         if (!isMounted) return;
         setUsersState((prev) => ({
           ...prev,
           loading: false,
           data: response.data || [],
-          totalPages: response.total_pages || 1
+          totalPages: response.total_pages || 1,
+          total: Number(response.total || 0)
         }));
       } catch (error) {
         if (!isMounted) return;
         setUsersState((prev) => ({
           ...prev,
           loading: false,
-          error: error?.error || 'Unable to load users.'
+          error: error?.detail || error?.error || 'Unable to load users.'
         }));
       }
     };
@@ -113,20 +150,21 @@ export default function AdminDashboard({ navigate }) {
     const loadImages = async () => {
       setImagesState((prev) => ({ ...prev, loading: true, error: '' }));
       try {
-        const response = await getAdminImages(imagesState.page, 10);
+        const response = await getAdminImages(imagesState.page, PAGE_SIZE);
         if (!isMounted) return;
         setImagesState((prev) => ({
           ...prev,
           loading: false,
           data: response.data || [],
-          totalPages: response.total_pages || 1
+          totalPages: response.total_pages || 1,
+          total: Number(response.total || 0)
         }));
       } catch (error) {
         if (!isMounted) return;
         setImagesState((prev) => ({
           ...prev,
           loading: false,
-          error: error?.error || 'Unable to load images.'
+          error: error?.detail || error?.error || 'Unable to load images.'
         }));
       }
     };
@@ -134,35 +172,40 @@ export default function AdminDashboard({ navigate }) {
     const loadReports = async () => {
       setReportsState((prev) => ({ ...prev, loading: true, error: '' }));
       try {
-        const response = await getAdminReports(reportsState.page, 10);
+        const response = await getAdminReports(reportsState.page, PAGE_SIZE);
         if (!isMounted) return;
         setReportsState((prev) => ({
           ...prev,
           loading: false,
           data: response.data || [],
-          totalPages: response.total_pages || 1
+          totalPages: response.total_pages || 1,
+          total: Number(response.total || 0)
         }));
       } catch (error) {
         if (!isMounted) return;
         setReportsState((prev) => ({
           ...prev,
           loading: false,
-          error: error?.error || 'Unable to load reports.'
+          error: error?.detail || error?.error || 'Unable to load reports.'
         }));
       }
     };
 
-    if (activeTab === 'users') {
-      loadUsers();
-    }
+    const loadPending = async () => {
+      try {
+        const response = await getRetrainingQueue(1, 1, 'PENDING');
+        if (!isMounted) return;
+        setPendingRetraining(Number(response.total || 0));
+      } catch {
+        if (!isMounted) return;
+        setPendingRetraining(0);
+      }
+    };
 
-    if (activeTab === 'images') {
-      loadImages();
-    }
-
-    if (activeTab === 'reports') {
-      loadReports();
-    }
+    if (activeTab === 'users') loadUsers();
+    if (activeTab === 'images') loadImages();
+    if (activeTab === 'reports') loadReports();
+    loadPending();
 
     return () => {
       isMounted = false;
@@ -170,271 +213,308 @@ export default function AdminDashboard({ navigate }) {
   }, [activeTab, usersState.page, imagesState.page, reportsState.page]);
 
   return (
-    <div className="min-h-screen bg-gray-50">
-      <div className="bg-white border-b border-gray-200">
-        <div className="max-w-6xl mx-auto px-6 py-5 flex flex-col md:flex-row md:items-center md:justify-between gap-4">
+    <div className="min-h-screen bg-gradient-to-br from-green-50 to-white">
+      <header className="border-b border-green-700/20 bg-gradient-to-r from-green-600 to-green-700 text-white">
+        <div className="mx-auto flex max-w-7xl flex-col gap-5 px-6 py-7 lg:flex-row lg:items-center lg:justify-between">
           <div>
-            <h1 className="text-2xl font-bold text-gray-900">Admin Dashboard</h1>
-            <p className="text-sm text-gray-500">Manage users, image activity, and reports.</p>
+            <div className="inline-flex items-center gap-2 rounded-full bg-white/15 px-3 py-1 text-xs uppercase tracking-wide">
+              <ShieldCheck className="h-4 w-4" />
+              Admin Workspace
+            </div>
+            <h1 className="mt-3 text-3xl font-semibold">VisionQC Control Center</h1>
+            <p className="mt-1 text-sm text-white/90">
+              Monitor users, image traffic, reports, and model retraining from one place.
+            </p>
           </div>
+
           <div className="flex flex-wrap gap-2">
             <button
               onClick={() => navigate('admin-access')}
-              className="bg-white text-gray-700 py-2 px-4 rounded border border-gray-200 hover:border-green-500"
+              className="rounded-lg border border-white/30 bg-white/10 px-4 py-2 text-sm font-medium transition hover:bg-white/20"
             >
               Access Control
             </button>
             <button
               onClick={() => navigate('admin-reports')}
-              className="bg-white text-gray-700 py-2 px-4 rounded border border-gray-200 hover:border-green-500"
+              className="rounded-lg border border-white/30 bg-white/10 px-4 py-2 text-sm font-medium transition hover:bg-white/20"
             >
               Reports
             </button>
             <button
               onClick={() => navigate('admin-dashboard')}
-              className="bg-green-600 text-white py-2 px-4 rounded hover:bg-green-700"
+              className="rounded-lg bg-white px-4 py-2 text-sm font-semibold text-green-700 transition hover:bg-green-50"
             >
-              Back to Home
+              Refresh
             </button>
           </div>
         </div>
-      </div>
+      </header>
 
-      <div className="max-w-6xl mx-auto px-6 py-8 space-y-6">
-        <div className="grid gap-4 md:grid-cols-3">
+      <main className="mx-auto max-w-7xl space-y-6 px-6 py-6">
+        <section className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
           <button
-            onClick={() => navigate('admin-access')}
-            className="bg-white rounded-2xl border border-gray-100 p-5 text-left shadow-sm hover:shadow-md transition"
+            onClick={() => setActiveTab('users')}
+            className="group rounded-2xl border border-green-100 bg-white p-5 text-left shadow-sm transition hover:-translate-y-0.5 hover:shadow"
           >
-            <div className="text-sm text-gray-500">Access</div>
-            <div className="text-lg font-semibold text-gray-900">Manage Users</div>
-            <p className="text-xs text-gray-500 mt-2">Review roles, status, and activity.</p>
+            <Users className="mb-3 h-5 w-5 text-green-600" />
+            <p className="text-xs uppercase tracking-wide text-gray-500">Users</p>
+            <p className="mt-1 text-2xl font-semibold text-gray-900">{usersState.total}</p>
+            <p className="mt-1 text-xs text-gray-500">Registered accounts</p>
           </button>
-          <button
-            onClick={() => navigate('admin-images')}
-            className="bg-white rounded-2xl border border-gray-100 p-5 text-left shadow-sm hover:shadow-md transition"
-          >
-            <div className="text-sm text-gray-500">Images</div>
-            <div className="text-lg font-semibold text-gray-900">Image Management</div>
-            <p className="text-xs text-gray-500 mt-2">Review uploads and predictions.</p>
-          </button>
-          <button
-            onClick={() => navigate('admin-reports')}
-            className="bg-white rounded-2xl border border-gray-100 p-5 text-left shadow-sm hover:shadow-md transition"
-          >
-            <div className="text-sm text-gray-500">Reports</div>
-            <div className="text-lg font-semibold text-gray-900">Generate Reports</div>
-            <p className="text-xs text-gray-500 mt-2">Download operator reports.</p>
-          </button>
-        </div>
 
-        <div className="flex flex-wrap gap-2">
-          {tabs.map((tab) => (
-            <button
-              key={tab.key}
-              onClick={() => setActiveTab(tab.key)}
-              className={`px-4 py-2 rounded-full text-sm font-medium border transition ${
-                activeTab === tab.key
-                  ? 'bg-green-600 text-white border-green-600'
-                  : 'bg-white text-gray-600 border-gray-200 hover:border-green-400'
-              }`}
-            >
-              {tab.label}
-            </button>
-          ))}
-        </div>
+          <button
+            onClick={() => setActiveTab('images')}
+            className="group rounded-2xl border border-green-100 bg-white p-5 text-left shadow-sm transition hover:-translate-y-0.5 hover:shadow"
+          >
+            <Images className="mb-3 h-5 w-5 text-green-600" />
+            <p className="text-xs uppercase tracking-wide text-gray-500">Images</p>
+            <p className="mt-1 text-2xl font-semibold text-gray-900">{imagesState.total}</p>
+            <p className="mt-1 text-xs text-gray-500">Uploaded scans</p>
+          </button>
+
+          <button
+            onClick={() => setActiveTab('reports')}
+            className="group rounded-2xl border border-green-100 bg-white p-5 text-left shadow-sm transition hover:-translate-y-0.5 hover:shadow"
+          >
+            <FileText className="mb-3 h-5 w-5 text-green-600" />
+            <p className="text-xs uppercase tracking-wide text-gray-500">Reports</p>
+            <p className="mt-1 text-2xl font-semibold text-gray-900">{reportsState.total}</p>
+            <p className="mt-1 text-xs text-gray-500">Generated files</p>
+          </button>
+
+          <button
+            onClick={() => setActiveTab('retraining')}
+            className="group rounded-2xl border border-orange-200 bg-gradient-to-br from-orange-100 to-red-50 p-5 text-left shadow-sm transition hover:-translate-y-0.5 hover:shadow"
+          >
+            <BrainCircuit className="mb-3 h-5 w-5 text-red-600" />
+            <p className="text-xs uppercase tracking-wide text-red-500">Retraining Queue</p>
+            <p className="mt-1 text-2xl font-semibold text-red-700">{pendingRetraining ?? '-'}</p>
+            <p className="mt-1 text-xs text-red-700">Pending model reviews</p>
+          </button>
+        </section>
+
+        <section className="rounded-2xl border border-green-100 bg-white p-3 shadow-sm">
+          <div className="flex flex-wrap gap-2">
+            {tabs.map((tab) => {
+              const Icon = tab.icon;
+              const isActive = activeTab === tab.key;
+
+              return (
+                <button
+                  key={tab.key}
+                  onClick={() => setActiveTab(tab.key)}
+                  className={`inline-flex items-center gap-2 rounded-xl px-4 py-2 text-sm font-medium transition ${
+                    isActive
+                      ? 'bg-gradient-to-r from-green-600 to-green-700 text-white'
+                      : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                  }`}
+                >
+                  <Icon className="h-4 w-4" />
+                  {tab.label}
+                  <span
+                    className={`rounded-full px-2 py-0.5 text-xs ${
+                      isActive ? 'bg-white/20 text-white' : 'bg-white text-gray-600'
+                    }`}
+                  >
+                    {tab.count}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+        </section>
 
         {activeTab === 'users' && (
-          <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-6 space-y-4">
-            <TableHeader title="Users" subtitle="Active accounts and roles." />
-
-            {usersState.loading && (
-              <div className="flex items-center justify-center text-gray-600">
-                <Loader2 className="w-5 h-5 mr-2 animate-spin" />
+          <TableCard title="Users" subtitle="Active accounts, roles, and latest sign-in activity.">
+            {usersState.loading ? (
+              <div className="flex items-center justify-center py-10 text-gray-600">
+                <Loader2 className="mr-2 h-5 w-5 animate-spin" />
                 Loading users...
               </div>
-            )}
+            ) : null}
 
-            {!usersState.loading && usersState.error && (
-              <div className="bg-red-50 border border-red-200 text-red-700 rounded-xl p-4">
+            {!usersState.loading && usersState.error ? (
+              <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
                 {usersState.error}
               </div>
-            )}
+            ) : null}
 
-            {!usersState.loading && !usersState.error && usersState.data.length === 0 && (
+            {!usersState.loading && !usersState.error && usersState.data.length === 0 ? (
               <EmptyState message="No users available yet." />
-            )}
+            ) : null}
 
-            {!usersState.loading && !usersState.error && usersState.data.length > 0 && (
-              <div className="overflow-x-auto">
+            {!usersState.loading && !usersState.error && usersState.data.length > 0 ? (
+              <div className="overflow-x-auto rounded-2xl border border-gray-200">
                 <table className="min-w-full text-sm">
-                  <thead className="text-left text-gray-500 border-b">
+                  <thead className="bg-gray-50 text-left text-xs uppercase tracking-wide text-gray-500">
                     <tr>
-                      <th className="py-2 pr-4">User</th>
-                      <th className="py-2 pr-4">Email</th>
-                      <th className="py-2 pr-4">Role</th>
-                      <th className="py-2 pr-4">Status</th>
-                      <th className="py-2 pr-4">Created</th>
-                      <th className="py-2">Last Login</th>
+                      <th className="px-4 py-3">User</th>
+                      <th className="px-4 py-3">Email</th>
+                      <th className="px-4 py-3">Role</th>
+                      <th className="px-4 py-3">Status</th>
+                      <th className="px-4 py-3">Created</th>
+                      <th className="px-4 py-3">Last Login</th>
                     </tr>
                   </thead>
                   <tbody className="text-gray-700">
                     {usersState.data.map((user) => (
-                      <tr key={user.user_id} className="border-b last:border-0">
-                        <td className="py-3 pr-4 font-medium text-gray-900">{user.full_name}</td>
-                        <td className="py-3 pr-4">{user.email}</td>
-                        <td className="py-3 pr-4 capitalize">{user.role}</td>
-                        <td className="py-3 pr-4">
-                          <span className="px-2 py-1 rounded-full text-xs bg-gray-100 text-gray-600">
+                      <tr key={user.user_id} className="border-t border-gray-100 hover:bg-gray-50/80">
+                        <td className="px-4 py-3 font-medium text-gray-900">{user.full_name}</td>
+                        <td className="px-4 py-3">{user.email}</td>
+                        <td className="px-4 py-3 capitalize">{user.role}</td>
+                        <td className="px-4 py-3">
+                          <span
+                            className={`rounded-full px-2.5 py-1 text-xs font-medium ${
+                              String(user.status).toUpperCase() === 'ACTIVE'
+                                ? 'bg-green-100 text-green-700'
+                                : 'bg-gray-200 text-gray-700'
+                            }`}
+                          >
                             {user.status}
                           </span>
                         </td>
-                        <td className="py-3 pr-4">{formatDate(user.created_at)}</td>
-                        <td className="py-3">{formatDate(user.last_login)}</td>
+                        <td className="px-4 py-3">{formatDate(user.created_at)}</td>
+                        <td className="px-4 py-3">{formatDate(user.last_login)}</td>
                       </tr>
                     ))}
                   </tbody>
                 </table>
               </div>
-            )}
+            ) : null}
 
-            {!usersState.loading && !usersState.error && usersState.totalPages > 1 && (
-              <Pagination
-                page={usersState.page}
-                totalPages={usersState.totalPages}
-                onPrev={() => setUsersState((prev) => ({ ...prev, page: Math.max(prev.page - 1, 1) }))}
-                onNext={() =>
-                  setUsersState((prev) => ({ ...prev, page: Math.min(prev.page + 1, prev.totalPages) }))
-                }
-              />
-            )}
-          </div>
+            <Pagination
+              page={usersState.page}
+              totalPages={usersState.totalPages}
+              onPrev={() => setUsersState((prev) => ({ ...prev, page: Math.max(prev.page - 1, 1) }))}
+              onNext={() =>
+                setUsersState((prev) => ({ ...prev, page: Math.min(prev.page + 1, prev.totalPages) }))
+              }
+            />
+          </TableCard>
         )}
 
         {activeTab === 'images' && (
-          <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-6 space-y-4">
-            <TableHeader title="Images" subtitle="Recent uploads and predictions." />
-
-            {imagesState.loading && (
-              <div className="flex items-center justify-center text-gray-600">
-                <Loader2 className="w-5 h-5 mr-2 animate-spin" />
+          <TableCard title="Images" subtitle="Recent uploads linked to prediction outcomes.">
+            {imagesState.loading ? (
+              <div className="flex items-center justify-center py-10 text-gray-600">
+                <Loader2 className="mr-2 h-5 w-5 animate-spin" />
                 Loading images...
               </div>
-            )}
+            ) : null}
 
-            {!imagesState.loading && imagesState.error && (
-              <div className="bg-red-50 border border-red-200 text-red-700 rounded-xl p-4">
+            {!imagesState.loading && imagesState.error ? (
+              <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
                 {imagesState.error}
               </div>
-            )}
+            ) : null}
 
-            {!imagesState.loading && !imagesState.error && imagesState.data.length === 0 && (
+            {!imagesState.loading && !imagesState.error && imagesState.data.length === 0 ? (
               <EmptyState message="No images found." />
-            )}
+            ) : null}
 
-            {!imagesState.loading && !imagesState.error && imagesState.data.length > 0 && (
-              <div className="overflow-x-auto">
+            {!imagesState.loading && !imagesState.error && imagesState.data.length > 0 ? (
+              <div className="overflow-x-auto rounded-2xl border border-gray-200">
                 <table className="min-w-full text-sm">
-                  <thead className="text-left text-gray-500 border-b">
+                  <thead className="bg-gray-50 text-left text-xs uppercase tracking-wide text-gray-500">
                     <tr>
-                      <th className="py-2 pr-4">Image ID</th>
-                      <th className="py-2 pr-4">User</th>
-                      <th className="py-2 pr-4">Label</th>
-                      <th className="py-2 pr-4">Confidence</th>
-                      <th className="py-2 pr-4">Uploaded</th>
-                      <th className="py-2">Predicted</th>
+                      <th className="px-4 py-3">Image ID</th>
+                      <th className="px-4 py-3">User</th>
+                      <th className="px-4 py-3">Label</th>
+                      <th className="px-4 py-3">Confidence</th>
+                      <th className="px-4 py-3">Uploaded</th>
+                      <th className="px-4 py-3">Predicted</th>
                     </tr>
                   </thead>
                   <tbody className="text-gray-700">
                     {imagesState.data.map((image) => (
-                      <tr key={image.image_id} className="border-b last:border-0">
-                        <td className="py-3 pr-4 font-medium text-gray-900">{image.image_id}</td>
-                        <td className="py-3 pr-4">
-                          <div className="text-gray-900">{image.full_name}</div>
+                      <tr key={image.image_id} className="border-t border-gray-100 hover:bg-gray-50/80">
+                        <td className="px-4 py-3 font-semibold text-gray-900">#{image.image_id}</td>
+                        <td className="px-4 py-3">
+                          <div className="font-medium text-gray-900">{image.full_name}</div>
                           <div className="text-xs text-gray-500">{image.email}</div>
                         </td>
-                        <td className="py-3 pr-4 capitalize">{image.label || '—'}</td>
-                        <td className="py-3 pr-4">{formatConfidence(image.confidence)}</td>
-                        <td className="py-3 pr-4">{formatDate(image.uploaded_at)}</td>
-                        <td className="py-3">{formatDate(image.predicted_at)}</td>
+                        <td className="px-4 py-3 capitalize">{image.label || '-'}</td>
+                        <td className="px-4 py-3">
+                          <span className="rounded-md bg-gray-100 px-2 py-1 text-xs font-medium text-gray-700">
+                            {formatConfidence(image.confidence)}
+                          </span>
+                        </td>
+                        <td className="px-4 py-3">{formatDate(image.uploaded_at)}</td>
+                        <td className="px-4 py-3">{formatDate(image.predicted_at)}</td>
                       </tr>
                     ))}
                   </tbody>
                 </table>
               </div>
-            )}
+            ) : null}
 
-            {!imagesState.loading && !imagesState.error && imagesState.totalPages > 1 && (
-              <Pagination
-                page={imagesState.page}
-                totalPages={imagesState.totalPages}
-                onPrev={() => setImagesState((prev) => ({ ...prev, page: Math.max(prev.page - 1, 1) }))}
-                onNext={() =>
-                  setImagesState((prev) => ({ ...prev, page: Math.min(prev.page + 1, prev.totalPages) }))
-                }
-              />
-            )}
-          </div>
+            <Pagination
+              page={imagesState.page}
+              totalPages={imagesState.totalPages}
+              onPrev={() => setImagesState((prev) => ({ ...prev, page: Math.max(prev.page - 1, 1) }))}
+              onNext={() =>
+                setImagesState((prev) => ({ ...prev, page: Math.min(prev.page + 1, prev.totalPages) }))
+              }
+            />
+          </TableCard>
         )}
 
         {activeTab === 'reports' && (
-          <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-6 space-y-4">
-            <TableHeader title="Reports" subtitle="Generated operator reports." />
-
-            {reportsState.loading && (
-              <div className="flex items-center justify-center text-gray-600">
-                <Loader2 className="w-5 h-5 mr-2 animate-spin" />
+          <TableCard title="Reports" subtitle="Operator report history and downloadable exports.">
+            {reportsState.loading ? (
+              <div className="flex items-center justify-center py-10 text-gray-600">
+                <Loader2 className="mr-2 h-5 w-5 animate-spin" />
                 Loading reports...
               </div>
-            )}
+            ) : null}
 
-            {!reportsState.loading && reportsState.error && (
-              <div className="bg-red-50 border border-red-200 text-red-700 rounded-xl p-4">
+            {!reportsState.loading && reportsState.error ? (
+              <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
                 {reportsState.error}
               </div>
-            )}
+            ) : null}
 
-            {!reportsState.loading && !reportsState.error && reportsState.data.length === 0 && (
+            {!reportsState.loading && !reportsState.error && reportsState.data.length === 0 ? (
               <EmptyState message="No reports available." />
-            )}
+            ) : null}
 
-            {!reportsState.loading && !reportsState.error && reportsState.data.length > 0 && (
-              <div className="overflow-x-auto">
+            {!reportsState.loading && !reportsState.error && reportsState.data.length > 0 ? (
+              <div className="overflow-x-auto rounded-2xl border border-gray-200">
                 <table className="min-w-full text-sm">
-                  <thead className="text-left text-gray-500 border-b">
+                  <thead className="bg-gray-50 text-left text-xs uppercase tracking-wide text-gray-500">
                     <tr>
-                      <th className="py-2 pr-4">Report</th>
-                      <th className="py-2 pr-4">Operator</th>
-                      <th className="py-2 pr-4">Format</th>
-                      <th className="py-2 pr-4">Created</th>
-                      <th className="py-2">Download</th>
+                      <th className="px-4 py-3">Report</th>
+                      <th className="px-4 py-3">Operator</th>
+                      <th className="px-4 py-3">Format</th>
+                      <th className="px-4 py-3">Created</th>
+                      <th className="px-4 py-3">Download</th>
                     </tr>
                   </thead>
                   <tbody className="text-gray-700">
                     {reportsState.data.map((report) => (
-                      <tr key={report.report_id} className="border-b last:border-0">
-                        <td className="py-3 pr-4">
-                          <div className="font-medium text-gray-900">{report.report_type}</div>
+                      <tr key={report.report_id} className="border-t border-gray-100 hover:bg-gray-50/80">
+                        <td className="px-4 py-3">
+                          <div className="font-semibold text-gray-900 capitalize">{report.report_type}</div>
                           <div className="text-xs text-gray-500">#{report.report_id}</div>
                         </td>
-                        <td className="py-3 pr-4">
-                          <div className="text-gray-900">{report.operator_name}</div>
+                        <td className="px-4 py-3">
+                          <div className="font-medium text-gray-900">{report.operator_name}</div>
                           <div className="text-xs text-gray-500">{report.operator_email}</div>
                         </td>
-                        <td className="py-3 pr-4 uppercase">{report.format}</td>
-                        <td className="py-3 pr-4">{formatDate(report.created_at)}</td>
-                        <td className="py-3">
+                        <td className="px-4 py-3 uppercase">{report.format}</td>
+                        <td className="px-4 py-3">{formatDate(report.created_at)}</td>
+                        <td className="px-4 py-3">
                           {report.download_link ? (
                             <a
                               href={report.download_link}
-                              className="text-green-600 hover:text-green-700"
+                              className="inline-flex items-center gap-1 rounded-md border border-green-200 bg-green-50 px-2.5 py-1 text-xs font-semibold text-green-700 transition hover:bg-green-100"
                               target="_blank"
                               rel="noreferrer"
                             >
                               Download
                             </a>
                           ) : (
-                            <span className="text-gray-400">—</span>
+                            <span className="text-gray-400">-</span>
                           )}
                         </td>
                       </tr>
@@ -442,21 +522,33 @@ export default function AdminDashboard({ navigate }) {
                   </tbody>
                 </table>
               </div>
-            )}
+            ) : null}
 
-            {!reportsState.loading && !reportsState.error && reportsState.totalPages > 1 && (
-              <Pagination
-                page={reportsState.page}
-                totalPages={reportsState.totalPages}
-                onPrev={() => setReportsState((prev) => ({ ...prev, page: Math.max(prev.page - 1, 1) }))}
-                onNext={() =>
-                  setReportsState((prev) => ({ ...prev, page: Math.min(prev.page + 1, prev.totalPages) }))
-                }
-              />
-            )}
-          </div>
+            <Pagination
+              page={reportsState.page}
+              totalPages={reportsState.totalPages}
+              onPrev={() => setReportsState((prev) => ({ ...prev, page: Math.max(prev.page - 1, 1) }))}
+              onNext={() =>
+                setReportsState((prev) => ({ ...prev, page: Math.min(prev.page + 1, prev.totalPages) }))
+              }
+            />
+          </TableCard>
         )}
-      </div>
+
+        {activeTab === 'retraining' ? (
+          <section className="rounded-3xl border border-green-100 bg-white p-2 shadow-sm">
+            <RetrainingQueueScreen embedded />
+          </section>
+        ) : null}
+
+        <div className="rounded-2xl border border-green-100 bg-white p-4 text-xs text-gray-500">
+          <div className="inline-flex items-center gap-2">
+            <Activity className="h-4 w-4 text-green-600" />
+            Dashboard updates as you switch tabs. Use Access Control and Reports shortcuts above for deep tasks.
+          </div>
+        </div>
+      </main>
     </div>
   );
 }
+

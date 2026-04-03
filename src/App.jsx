@@ -1,8 +1,9 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import SplashScreen from './components/SplashScreen';
 import LoginScreen from './components/LoginScreen';
 import RegisterScreen from './components/RegisterScreen';
 import ForgotPasswordScreen from './components/ForgotPasswordScreen';
+import ResetPasswordScreen from './components/ResetPasswordScreen';
 import HomeScreen from './components/HomeScreen';
 import UploadScreen from './components/UploadScreen';
 import ResultScreen from './components/ResultScreen';
@@ -20,8 +21,23 @@ import APIDocumentation from './components/APIDocumentation';
 import SEOHead from './components/SEOHead';
 import { createAdminUser, updateAdminUser, deleteAdminUser } from './utils/api';
 
+const getResetTokenFromLocation = () => {
+  if (typeof window === 'undefined') return '';
+  const searchParams = new URLSearchParams(window.location.search);
+  return String(searchParams.get('token') || '').trim();
+};
+
+const getInitialScreenFromLocation = () => {
+  if (typeof window === 'undefined') return 'splash';
+
+  const normalizedPath = String(window.location.pathname || '/').replace(/\/+$/, '') || '/';
+  if (normalizedPath === '/reset-password') return 'reset-password';
+  if (normalizedPath === '/forgot-password') return 'forgot-password';
+  return 'splash';
+};
+
 export default function App() {
-  const [currentScreen, setCurrentScreen] = useState('splash');
+  const [currentScreen, setCurrentScreen] = useState(getInitialScreenFromLocation);
   const [selectedImage, setSelectedImage] = useState(null);
   const [selectedImageId, setSelectedImageId] = useState(null);
   const [selectedAdminImage, setSelectedAdminImage] = useState(null);
@@ -31,6 +47,43 @@ export default function App() {
   const [userId, setUserId] = useState(null);
   const [userEmail, setUserEmail] = useState('');
   const [userName, setUserName] = useState('');
+  const [resetToken, setResetToken] = useState(getResetTokenFromLocation);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return undefined;
+
+    const handlePopState = () => {
+      setCurrentScreen(getInitialScreenFromLocation());
+      setResetToken(getResetTokenFromLocation());
+    };
+
+    window.addEventListener('popstate', handlePopState);
+    return () => {
+      window.removeEventListener('popstate', handlePopState);
+    };
+  }, []);
+
+  const updateAddressBar = (screen, token = '') => {
+    if (typeof window === 'undefined') return;
+
+    if (screen === 'reset-password') {
+      const query = new URLSearchParams();
+      const safeToken = String(token || '').trim();
+      if (safeToken) {
+        query.set('token', safeToken);
+      }
+      const nextPath = `/reset-password${query.toString() ? `?${query.toString()}` : ''}`;
+      window.history.replaceState(null, '', nextPath);
+      return;
+    }
+
+    if (screen === 'forgot-password') {
+      window.history.replaceState(null, '', '/forgot-password');
+      return;
+    }
+
+    window.history.replaceState(null, '', '/');
+  };
 
   const navigate = (screen, options = {}) => {
     let targetScreen = screen;
@@ -48,6 +101,18 @@ export default function App() {
     if (targetScreen === 'admin-images') {
       setSelectedAdminImage(null);
     }
+
+    if (targetScreen === 'reset-password') {
+      const nextToken = String(options?.token || resetToken || '').trim();
+      setResetToken(nextToken);
+      updateAddressBar('reset-password', nextToken);
+    } else {
+      if (resetToken) {
+        setResetToken('');
+      }
+      updateAddressBar(targetScreen);
+    }
+
     setCurrentScreen(targetScreen);
   };
 
@@ -107,6 +172,11 @@ export default function App() {
         return {
           title: 'VisionQC - Forgot Password | Reset Your Account',
           description: 'Reset your VisionQC account password to regain access to your plant disease analysis tools.'
+        };
+      case 'reset-password':
+        return {
+          title: 'VisionQC - Reset Password | Set a New Password',
+          description: 'Set a new password securely to regain access to your VisionQC account.'
         };
       case 'home':
         return {
@@ -201,6 +271,8 @@ export default function App() {
         return <RegisterScreen onRegister={() => navigate('login')} onBack={() => navigate('login')} />;
       case 'forgot-password':
         return <ForgotPasswordScreen onBack={() => navigate('login')} />;
+      case 'reset-password':
+        return <ResetPasswordScreen initialToken={resetToken} onBack={() => navigate('login')} />;
       case 'home':
         return <HomeScreen navigate={navigate} />;
       case 'upload':
@@ -212,7 +284,7 @@ export default function App() {
           onPredictionComplete={(prediction) => setCurrentPrediction(prediction)}
         />; 
       case 'result':
-        return <ResultScreen navigate={navigate} selectedImage={selectedImage} currentPrediction={currentPrediction} />;
+        return <ResultScreen navigate={navigate} selectedImage={selectedImage} currentPrediction={currentPrediction} currentUser={{ id: userId, name: userName, email: userEmail }} />;
       case 'chat':
         return <ChatScreen navigate={navigate} />;
       case 'history':

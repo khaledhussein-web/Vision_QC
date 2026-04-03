@@ -9,3 +9,10 @@ venv/
 __pycache__/
 *.pyc
 
+# Backend runtime artifacts
+backend/.env
+backend/__pycache__/
+backend/*.log
+backend/uploads/
+backend/reports/
+

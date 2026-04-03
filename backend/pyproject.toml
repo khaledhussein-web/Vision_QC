@@ -7,6 +7,7 @@ dependencies = [
   "fastapi",
   "uvicorn[standard]",
   "python-multipart",
+  "psycopg2-binary",
   "pillow",
   "numpy",
   "opencv-python",

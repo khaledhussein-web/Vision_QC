@@ -26,13 +26,26 @@ const getAuthHeaders = () => {
 };
 
 const parseResponse = async (response) => {
-  const data = await response.json().catch(() => ({}));
+  const raw = await response.text().catch(() => '');
+  let data = {};
+  try {
+    data = raw ? JSON.parse(raw) : {};
+  } catch (_error) {
+    data = {};
+  }
+
+  const cleanedRaw = String(raw || '')
+    .replace(/<[^>]*>/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
 
   if (!response.ok) {
+    const fallbackDetail = cleanedRaw ? cleanedRaw.slice(0, 220) : null;
     throw {
       status: response.status,
-      error: data.error || 'Request failed',
-      detail: data.detail || null
+      error: data.error || response.statusText || 'Request failed',
+      detail: data.detail || fallbackDetail,
+      hint: data.hint || null
     };
   }
 
@@ -148,18 +161,34 @@ export async function resetPassword(
  * POST /api/analyze
  */
 export async function analyzeImage(
-  imageFile
+  imageFile,
+  options = {}
 ) {
   const formData = new FormData();
   formData.append('image', imageFile);
+  const cropHint = String(options?.cropHint || '').trim();
+  if (cropHint) {
+    formData.append('crop_hint', cropHint);
+  }
 
-  const response = await fetch(`${API_BASE_URL}/api/analyze`, {
-    method: 'POST',
-    headers: {
-      ...getAuthHeaders()
-    },
-    body: formData
-  });
+  let response;
+  try {
+    response = await fetch(`${API_BASE_URL}/api/analyze`, {
+      method: 'POST',
+      headers: {
+        ...getAuthHeaders()
+      },
+      body: formData
+    });
+  } catch (error) {
+    const baseUrlHint = API_BASE_URL || 'http://localhost:5000';
+    throw {
+      status: 0,
+      error: 'Backend unreachable',
+      detail: `Could not connect to ${baseUrlHint}/api/analyze`,
+      hint: 'Start all services with `npm run dev:all` and keep the terminal running.'
+    };
+  }
 
   return parseResponse(response);
 }
@@ -246,16 +275,61 @@ export async function getChatHistory(chatId) {
 export async function sendChatMessage(
   userId,
   message,
-  history = []
+  history = [],
+  options = {}
 ) {
-  const response = await fetch(`${API_BASE_URL}/api/chat`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      ...getAuthHeaders()
-    },
-    body: JSON.stringify({ user_id: userId, message, history })
-  });
+  const imageFile = options?.imageFile || null;
+  const hasImage = typeof File !== 'undefined' && imageFile instanceof File;
+  let response;
+
+  if (hasImage) {
+    const formData = new FormData();
+    const trimmedMessage = String(message || '').trim();
+    const safeHistory = Array.isArray(history) ? history : [];
+    const cropHint = String(options?.cropHint || '').trim();
+
+    if (userId !== undefined && userId !== null) {
+      formData.append('user_id', String(userId));
+    }
+    if (trimmedMessage) {
+      formData.append('message', trimmedMessage);
+    }
+    formData.append('history', JSON.stringify(safeHistory));
+    formData.append('image', imageFile);
+
+    if (options?.chatId) {
+      formData.append('chat_id', String(options.chatId));
+    }
+    if (options?.imageId) {
+      formData.append('image_id', String(options.imageId));
+    }
+    if (options?.predictionId) {
+      formData.append('prediction_id', String(options.predictionId));
+    }
+    if (options?.topic) {
+      formData.append('topic', String(options.topic));
+    }
+    if (cropHint) {
+      formData.append('crop_hint', cropHint);
+    }
+
+    response = await fetch(`${API_BASE_URL}/api/chat`, {
+      method: 'POST',
+      headers: {
+        ...getAuthHeaders()
+      },
+      body: formData
+    });
+  } else {
+    response = await fetch(`${API_BASE_URL}/api/chat`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...getAuthHeaders()
+      },
+      body: JSON.stringify({ user_id: userId, message, history })
+    });
+  }
 
   return parseResponse(response);
 }
@@ -406,6 +480,116 @@ export async function generateAdminReport(reportType = 'images', format = 'csv')
       format
     })
   });
+
+  return parseResponse(response);
+}
+
+/**
+ * Flag Prediction for Retraining
+ * POST /api/predictions/{prediction_id}/flag-for-retraining
+ */
+export async function flagPredictionForRetraining(
+  predictionId,
+  userId,
+  reason = null
+) {
+  const response = await fetch(
+    `${API_BASE_URL}/api/predictions/${predictionId}/flag-for-retraining`,
+    {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...getAuthHeaders()
+      },
+      body: JSON.stringify({
+        user_id: userId,
+        ...(reason ? { reason: String(reason) } : {})
+      })
+    }
+  );
+
+  return parseResponse(response);
+}
+
+/**
+ * Get Retraining Queue (Admin)
+ * GET /api/admin/retraining-queue
+ */
+export async function getRetrainingQueue(
+  page = 1,
+  perPage = 20,
+  status = 'PENDING'
+) {
+  const query = new URLSearchParams({
+    page: String(page),
+    per_page: String(perPage),
+    status: String(status)
+  });
+
+  const response = await fetch(
+    `${API_BASE_URL}/api/admin/retraining-queue?${query.toString()}`,
+    {
+      method: 'GET',
+      headers: {
+        ...getAuthHeaders()
+      }
+    }
+  );
+
+  return parseResponse(response);
+}
+
+/**
+ * Update Retraining Queue Item (Admin)
+ * PATCH /api/admin/retraining-queue/{queue_id}
+ */
+export async function updateRetrainingQueueItem(
+  queueId,
+  status,
+  adminId = null,
+  adminNotes = null
+) {
+  const response = await fetch(
+    `${API_BASE_URL}/api/admin/retraining-queue/${queueId}`,
+    {
+      method: 'PATCH',
+      headers: {
+        'Content-Type': 'application/json',
+        ...getAuthHeaders()
+      },
+      body: JSON.stringify({
+        status: String(status),
+        ...(adminId ? { admin_id: Number(adminId) } : {}),
+        ...(adminNotes ? { admin_notes: String(adminNotes) } : {})
+      })
+    }
+  );
+
+  return parseResponse(response);
+}
+
+/**
+ * Get Low Confidence Predictions (Admin)
+ * GET /api/admin/low-confidence-predictions
+ */
+export async function getLowConfidencePredictions(
+  threshold = 0.7,
+  limit = 100
+) {
+  const query = new URLSearchParams({
+    threshold: String(threshold),
+    limit: String(limit)
+  });
+
+  const response = await fetch(
+    `${API_BASE_URL}/api/admin/low-confidence-predictions?${query.toString()}`,
+    {
+      method: 'GET',
+      headers: {
+        ...getAuthHeaders()
+      }
+    }
+  );
 
   return parseResponse(response);
 }

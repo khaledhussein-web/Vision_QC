@@ -2,6 +2,8 @@ const express = require('express');
 const { Pool } = require('pg');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
+const crypto = require('crypto');
+const nodemailer = require('nodemailer');
 const cors = require('cors');
 const multer = require('multer');
 const fetch = (...args) => import('node-fetch').then(({ default: fetch }) => fetch(...args));
@@ -21,6 +23,26 @@ const PYTHON_SERVICE_URL = process.env.PYTHON_SERVICE_URL || 'http://127.0.0.1:8
 const OLLAMA_BASE_URL = String(process.env.OLLAMA_BASE_URL || 'http://localhost:11434').trim().replace(/\/$/, '');
 const OLLAMA_MODEL = String(process.env.OLLAMA_MODEL || 'llama3').trim();
 const DEFAULT_LOCAL_PYTHON_SERVICE_URL = 'http://127.0.0.1:8000';
+const PASSWORD_RESET_TOKEN_PREFIX = 'pwreset:';
+const PASSWORD_RESET_EXPIRY_MINUTES = Math.min(
+  Math.max(Number(process.env.PASSWORD_RESET_EXPIRY_MINUTES) || 30, 5),
+  180
+);
+const SMTP_URL = String(process.env.SMTP_URL || '').trim();
+const SMTP_HOST = String(process.env.SMTP_HOST || '').trim();
+const SMTP_PORT = Math.max(Number(process.env.SMTP_PORT) || 587, 1);
+const SMTP_SECURE = ['1', 'true', 'yes', 'on'].includes(
+  String(process.env.SMTP_SECURE || '').trim().toLowerCase()
+);
+const SMTP_USER = String(process.env.SMTP_USER || '').trim();
+const SMTP_PASS = String(process.env.SMTP_PASS || '').trim();
+const SMTP_FROM_NAME = String(process.env.SMTP_FROM_NAME || 'VisionQC').trim();
+const SMTP_FROM_EMAIL = String(process.env.SMTP_FROM_EMAIL || '').trim();
+const SMTP_SUBJECT = String(process.env.SMTP_SUBJECT || 'VisionQC Password Reset').trim();
+const RESET_PASSWORD_URL = String(process.env.RESET_PASSWORD_URL || 'http://localhost:5173/reset-password').trim();
+const EXPOSE_RESET_TOKEN_IN_RESPONSE = ['1', 'true', 'yes', 'on'].includes(
+  String(process.env.EXPOSE_RESET_TOKEN_IN_RESPONSE ?? (process.env.NODE_ENV !== 'production')).trim().toLowerCase()
+);
 
 // -------------------- Middleware --------------------
 
@@ -97,7 +119,7 @@ const extractOriginalQuestion = (message) => {
   return text;
 };
 
-const buildOllamaPrompt = (history, userMessage) => {
+const buildOllamaPrompt = (history, userMessage, imageContext = '') => {
   const systemPrompt =
     'You are VisionQC, an AI assistant for plant disease detection. ' +
     'Provide concise, practical guidance. If unsure, ask for a clear photo and suggest using the Upload screen for analysis. ' +
@@ -112,9 +134,12 @@ const buildOllamaPrompt = (history, userMessage) => {
     .filter(Boolean)
     .join('\n');
 
+  const normalizedImageContext = String(imageContext || '').trim();
+
   return [
     `System: ${systemPrompt}`,
     historyText,
+    normalizedImageContext ? `Image analysis context:\n${normalizedImageContext}` : '',
     `User: ${String(userMessage || '').trim()}`,
     'Assistant:'
   ]
@@ -136,6 +161,215 @@ const buildSuggestionFallback = (label, confidence) => {
   }
 
   return `Predicted condition: ${normalizedLabel}. Follow crop-specific treatment guidance and monitor the plant for 3-5 days. ${confidenceText}`.trim();
+};
+
+const parseChatHistoryInput = (historyInput) => {
+  let parsed = historyInput;
+
+  if (typeof historyInput === 'string') {
+    try {
+      parsed = JSON.parse(historyInput);
+    } catch (_error) {
+      parsed = [];
+    }
+  }
+
+  return Array.isArray(parsed)
+    ? parsed
+        .filter((item) => item && typeof item.role === 'string' && typeof item.content === 'string')
+        .slice(-8)
+    : [];
+};
+
+const asPositiveIntegerOrNull = (value) => {
+  const parsed = Number(value);
+  if (Number.isInteger(parsed) && parsed > 0) {
+    return parsed;
+  }
+  return null;
+};
+
+const formatConfidencePercent = (confidence) => {
+  const parsed = Number(confidence);
+  if (!Number.isFinite(parsed)) {
+    return 'N/A';
+  }
+  return `${Math.round(parsed * 100)}%`;
+};
+
+const buildImageAnalysisContext = (prediction, cropHint = '') => {
+  if (!prediction || typeof prediction !== 'object') {
+    return '';
+  }
+
+  const lines = [
+    `Predicted label: ${String(prediction.label || 'unknown')}`,
+    `Confidence: ${formatConfidencePercent(prediction.confidence)}`
+  ];
+  const normalizedSuggestion = String(prediction.suggested_sc || '').trim();
+  if (normalizedSuggestion) {
+    lines.push(`Suggested treatment: ${normalizedSuggestion}`);
+  }
+  if (cropHint) {
+    lines.push(`User crop hint: ${cropHint}`);
+  }
+
+  return lines.join('\n');
+};
+
+const buildPredictionServiceUrls = () =>
+  [normalizeBaseUrl(PYTHON_SERVICE_URL), DEFAULT_LOCAL_PYTHON_SERVICE_URL].filter(
+    (url, index, self) => Boolean(url) && self.indexOf(url) === index
+  );
+
+const forwardImageToPredictionService = async (file, cropHint = '') => {
+  const predictionServiceUrls = buildPredictionServiceUrls();
+  const normalizedCropHint = String(cropHint || '').trim();
+  let lastServiceError = null;
+
+  for (const serviceBaseUrl of predictionServiceUrls) {
+    const formData = new FormData();
+    formData.append('image', fs.createReadStream(file.path), {
+      filename: file.originalname || path.basename(file.path),
+      contentType: file.mimetype || 'application/octet-stream'
+    });
+    if (normalizedCropHint) {
+      formData.append('crop_hint', normalizedCropHint);
+    }
+
+    try {
+      const response = await fetch(`${serviceBaseUrl}/predict`, {
+        method: 'POST',
+        body: formData,
+        headers: formData.getHeaders(),
+        timeout: 15000
+      });
+
+      if (!response.ok) {
+        const text = await response.text();
+        lastServiceError = `HTTP ${response.status} from ${serviceBaseUrl}/predict`;
+        console.error('FastAPI error:', {
+          serviceBaseUrl,
+          status: response.status,
+          body: text
+        });
+        continue;
+      }
+
+      return await response.json();
+    } catch (serviceError) {
+      lastServiceError = serviceError?.message || 'Prediction service unreachable';
+      console.error('FastAPI request failed:', {
+        serviceBaseUrl,
+        error: lastServiceError
+      });
+    }
+  }
+
+  const normalizedError = String(lastServiceError || '');
+  const serviceHelp = normalizedError.includes('ECONNREFUSED')
+    ? 'FastAPI service is not running. Start it with: .\\.venv\\Scripts\\python.exe -m uvicorn backend.fastapi_service:app --host 127.0.0.1 --port 8000 --reload'
+    : null;
+  const error = new Error(lastServiceError || 'Failed to reach prediction service');
+  error.status = 500;
+  error.error = 'Prediction service error';
+  error.detail = lastServiceError || 'Failed to reach prediction service';
+  error.hint = serviceHelp;
+  throw error;
+};
+
+const persistPredictionForUser = async (userId, filePath, predictionData) => {
+  const imagePath = path.relative(__dirname, filePath).replace(/\\/g, '/');
+
+  const insertImageQuery = `
+    INSERT INTO image (user_id, image_path)
+    VALUES ($1, $2)
+    RETURNING image_id
+  `;
+  const imageResult = await pool.query(insertImageQuery, [userId, imagePath]);
+  const imageId = imageResult.rows[0].image_id;
+
+  const insertPredictionQuery = `
+    INSERT INTO prediction (image_id, label, confidence, heatmap_url, suggested_sc)
+    VALUES ($1, $2, $3, $4, $5)
+    RETURNING prediction_id, image_id, label, confidence, heatmap_url, suggested_sc, created_at, updated_at
+  `;
+  const predictionResult = await pool.query(insertPredictionQuery, [
+    imageId,
+    predictionData.label,
+    predictionData.confidence,
+    predictionData.heatmap_url || null,
+    predictionData.suggested_sc || buildSuggestionFallback(predictionData.label, predictionData.confidence)
+  ]);
+
+  return predictionResult.rows[0];
+};
+
+const persistImageForUser = async (userId, filePath) => {
+  const imagePath = path.relative(__dirname, filePath).replace(/\\/g, '/');
+  const insertImageQuery = `
+    INSERT INTO image (user_id, image_path)
+    VALUES ($1, $2)
+    RETURNING image_id, user_id, image_path, uploaded_at, created_at, updated_at
+  `;
+  const imageResult = await pool.query(insertImageQuery, [userId, imagePath]);
+  return imageResult.rows[0];
+};
+
+const fetchPredictionDetailsById = async (predictionId, requesterId, isAdmin) => {
+  const predictionQuery = `
+    SELECT
+      p.prediction_id,
+      p.image_id,
+      p.label,
+      p.confidence,
+      p.heatmap_url,
+      p.suggested_sc,
+      p.created_at,
+      p.updated_at,
+      i.user_id AS owner_user_id,
+      i.image_path,
+      i.uploaded_at
+    FROM prediction p
+    JOIN image i ON i.image_id = p.image_id
+    WHERE p.prediction_id = $1
+      AND ($2::boolean = TRUE OR i.user_id = $3)
+    LIMIT 1
+  `;
+  const predictionResult = await pool.query(predictionQuery, [predictionId, isAdmin, requesterId]);
+  return predictionResult.rows[0] || null;
+};
+
+const analyzeUploadedImageForUser = async ({ file, userId, cropHint = '' }) => {
+  if (!file) {
+    const error = new Error('Image file is required');
+    error.status = 400;
+    error.error = 'Image file is required';
+    throw error;
+  }
+
+  const normalizedCropHint = String(cropHint || '').trim();
+
+  console.log('Analyze file info', {
+    originalname: file.originalname,
+    mimetype: file.mimetype,
+    size: file.size,
+    path: file.path,
+    cropHint: normalizedCropHint || null
+  });
+
+  console.log('Forwarding to Python service', {
+    url: `${PYTHON_SERVICE_URL}/predict`,
+    cropHint: normalizedCropHint || null
+  });
+
+  const predictionPayload = await forwardImageToPredictionService(file, normalizedCropHint);
+  const prediction = await persistPredictionForUser(userId, file.path, predictionPayload);
+
+  return {
+    prediction,
+    predictionPayload
+  };
 };
 
 // -------------------- Multer (file upload) configuration --------------------
@@ -166,6 +400,10 @@ const upload = multer({
   storage,
   limits: { fileSize: 10 * 1024 * 1024 }
 });
+const uploadLegacyImage = upload.fields([
+  { name: 'image_file', maxCount: 1 },
+  { name: 'image', maxCount: 1 }
+]);
 
 // -------------------- Database connection --------------------
 
@@ -173,6 +411,32 @@ const upload = multer({
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
 });
+
+const ensureRetrainingQueueSchema = async () => {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS retraining_queue (
+      queue_id INT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+      prediction_id INT NOT NULL,
+      flagged_by_user_id INT NOT NULL,
+      status VARCHAR(20) NOT NULL DEFAULT 'PENDING',
+      confidence_score DECIMAL(6,4) NOT NULL,
+      reason VARCHAR(255) NULL,
+      admin_id INT NULL,
+      admin_notes TEXT NULL,
+      reviewed_at TIMESTAMP NULL,
+      created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMP NOT NULL DEFAULT NOW(),
+      CONSTRAINT fk_rq_prediction FOREIGN KEY (prediction_id) REFERENCES prediction(prediction_id) ON DELETE CASCADE,
+      CONSTRAINT fk_rq_user FOREIGN KEY (flagged_by_user_id) REFERENCES users(user_id) ON DELETE CASCADE,
+      CONSTRAINT fk_rq_admin FOREIGN KEY (admin_id) REFERENCES users(user_id) ON DELETE SET NULL
+    )
+  `);
+
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_retraining_queue_status ON retraining_queue(status)`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_retraining_queue_prediction_id ON retraining_queue(prediction_id)`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_retraining_queue_user_id ON retraining_queue(flagged_by_user_id)`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_retraining_queue_created_at ON retraining_queue(created_at DESC)`);
+};
 
 // -------------------- Test database connection --------------------
 
@@ -187,6 +451,14 @@ pool.connect((err, client, release) => {
   // release the client back to the pool
   release();
 });
+
+ensureRetrainingQueueSchema()
+  .then(() => {
+    console.log('Retraining queue schema verified');
+  })
+  .catch((schemaError) => {
+    console.error('Failed to verify retraining queue schema:', schemaError);
+  });
 
 // -------------------- Login endpoint --------------------
 
@@ -321,6 +593,146 @@ const getRoleIdByName = async (roleName) => {
   return roleResult.rows[0].role_id;
 };
 
+const generatePasswordResetToken = () => `${PASSWORD_RESET_TOKEN_PREFIX}${crypto.randomBytes(32).toString('hex')}`;
+
+const issuePasswordResetToken = async (userId) => {
+  const tokenValue = generatePasswordResetToken();
+  const expiryInterval = `${PASSWORD_RESET_EXPIRY_MINUTES} minutes`;
+
+  await pool.query(
+    `
+      UPDATE session
+      SET is_valid = FALSE
+      WHERE user_id = $1
+        AND token LIKE $2
+        AND is_valid = TRUE
+    `,
+    [userId, `${PASSWORD_RESET_TOKEN_PREFIX}%`]
+  );
+
+  const insertResult = await pool.query(
+    `
+      INSERT INTO session (user_id, token, expires_at, is_valid)
+      VALUES ($1, $2, NOW() + $3::interval, TRUE)
+      RETURNING token, expires_at
+    `,
+    [userId, tokenValue, expiryInterval]
+  );
+
+  return insertResult.rows[0];
+};
+
+const buildPasswordResetUrl = (tokenValue) => {
+  const safeToken = String(tokenValue || '').trim();
+  if (!safeToken) return RESET_PASSWORD_URL;
+
+  try {
+    const url = new URL(RESET_PASSWORD_URL);
+    url.searchParams.set('token', safeToken);
+    return url.toString();
+  } catch (_error) {
+    const separator = RESET_PASSWORD_URL.includes('?') ? '&' : '?';
+    return `${RESET_PASSWORD_URL}${separator}token=${encodeURIComponent(safeToken)}`;
+  }
+};
+
+let smtpTransporter = null;
+
+const getSmtpTransporter = () => {
+  if (smtpTransporter) {
+    return smtpTransporter;
+  }
+
+  if (SMTP_URL) {
+    smtpTransporter = nodemailer.createTransport(SMTP_URL);
+    return smtpTransporter;
+  }
+
+  if (!SMTP_HOST || !SMTP_USER || !SMTP_PASS) {
+    return null;
+  }
+
+  smtpTransporter = nodemailer.createTransport({
+    host: SMTP_HOST,
+    port: SMTP_PORT,
+    secure: SMTP_SECURE,
+    auth: {
+      user: SMTP_USER,
+      pass: SMTP_PASS
+    }
+  });
+
+  return smtpTransporter;
+};
+
+const sendPasswordResetEmailViaSmtp = async ({ email, resetUrl, expiresAt, fullName = '' }) => {
+  if (!SMTP_FROM_EMAIL) {
+    return {
+      sent: false,
+      reason: 'missing_from_email'
+    };
+  }
+
+  const transporter = getSmtpTransporter();
+  if (!transporter) {
+    return {
+      sent: false,
+      reason: 'smtp_not_configured'
+    };
+  }
+
+  const recipientEmail = String(email || '').trim().toLowerCase();
+  const recipientName = String(fullName || '').trim();
+  const displayName = recipientName || 'there';
+  const expiryIso = new Date(expiresAt).toISOString();
+  const subject = SMTP_SUBJECT;
+  const textBody = [
+    `Hello ${displayName},`,
+    '',
+    'We received a request to reset your VisionQC password.',
+    `Reset link: ${resetUrl}`,
+    `Expires at: ${expiryIso}`,
+    '',
+    'If you did not request this, please ignore this email.'
+  ].join('\n');
+  const htmlBody = `
+    <p>Hello ${displayName},</p>
+    <p>We received a request to reset your VisionQC password.</p>
+    <p><a href="${resetUrl}">Reset your password</a></p>
+    <p>If the button does not open, use this URL:</p>
+    <p>${resetUrl}</p>
+    <p>This link expires at ${expiryIso}.</p>
+    <p>If you did not request this, please ignore this email.</p>
+  `;
+
+  try {
+    const result = await transporter.sendMail({
+      from: `"${SMTP_FROM_NAME}" <${SMTP_FROM_EMAIL}>`,
+      to: recipientEmail,
+      subject,
+      text: textBody,
+      html: htmlBody
+    });
+    if (result?.messageId) {
+      return {
+        sent: true
+      };
+    }
+
+    return {
+      sent: false,
+      reason: 'smtp_rejected',
+      provider_message: 'SMTP provider did not return a message id'
+    };
+  } catch (error) {
+    return {
+      sent: false,
+      reason: 'smtp_send_failed',
+      provider_message: error?.message || 'Failed to send SMTP email'
+    };
+  }
+};
+
 // -------------------- Register endpoint --------------------
 
 // POST /api/register
@@ -413,6 +825,216 @@ app.post('/api/register', async (req, res) => {
   }
 });
 
+// -------------------- Password reset endpoints --------------------
+
+// POST /api/auth/forgot-password
+// Purpose: issue a short-lived reset token and (normally) send it by email.
+app.post('/api/auth/forgot-password', async (req, res) => {
+  const normalizedEmail = typeof req.body?.email === 'string' ? req.body.email.trim().toLowerCase() : '';
+  if (!normalizedEmail || !isValidEmail(normalizedEmail)) {
+    return res.status(400).json({ error: 'Valid email is required' });
+  }
+
+  const genericResponse = {
+    status: 'success',
+    message: 'If the email is registered, a password reset link has been sent.'
+  };
+
+  try {
+    const userResult = await pool.query(
+      `
+        SELECT user_id, full_name
+        FROM users
+        WHERE LOWER(email) = LOWER($1)
+        LIMIT 1
+      `,
+      [normalizedEmail]
+    );
+
+    if (userResult.rows.length === 0) {
+      return res.json(genericResponse);
+    }
+
+    const userId = Number(userResult.rows[0].user_id);
+    const fullName = String(userResult.rows[0].full_name || '').trim();
+    const resetTokenRow = await issuePasswordResetToken(userId);
+    const resetUrl = buildPasswordResetUrl(resetTokenRow.token);
+    const delivery = await sendPasswordResetEmailViaSmtp({
+      email: normalizedEmail,
+      resetUrl,
+      expiresAt: resetTokenRow.expires_at,
+      fullName
+    });
+
+    if (!delivery.sent) {
+      console.error('Password reset delivery failed:', {
+        email: normalizedEmail,
+        reason: delivery.reason,
+        provider_status: delivery.provider_status,
+        provider_message: delivery.provider_message
+      });
+    }
+
+    if (EXPOSE_RESET_TOKEN_IN_RESPONSE) {
+      return res.json({
+        ...genericResponse,
+        reset_token: resetTokenRow.token,
+        reset_url: resetUrl,
+        expires_at: resetTokenRow.expires_at,
+        email_delivery: delivery.sent ? 'sent' : 'not_sent'
+      });
+    }
+
+    return res.json(genericResponse);
+  } catch (error) {
+    console.error('Forgot password error:', error);
+    return res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// POST /api/auth/reset-password
+// Purpose: validate reset token and set a new password.
+app.post('/api/auth/reset-password', async (req, res) => {
+  const tokenValue = typeof req.body?.token === 'string' ? req.body.token.trim() : '';
+  const passwordValue = typeof req.body?.password === 'string' ? req.body.password : '';
+  const confirmationValue = typeof req.body?.password_confirmation === 'string' ? req.body.password_confirmation : '';
+
+  if (!tokenValue || !passwordValue || !confirmationValue) {
+    return res.status(400).json({ error: 'token, password, and password_confirmation are required' });
+  }
+
+  if (passwordValue !== confirmationValue) {
+    return res.status(400).json({ error: 'Passwords do not match' });
+  }
+
+  const passwordValidationError = validatePassword(passwordValue);
+  if (passwordValidationError) {
+    return res.status(400).json({ error: passwordValidationError });
+  }
+
+  try {
+    const resetSessionResult = await pool.query(
+      `
+        SELECT session_id, user_id
+        FROM session
+        WHERE token = $1
+          AND is_valid = TRUE
+          AND expires_at > NOW()
+        LIMIT 1
+      `,
+      [tokenValue]
+    );
+
+    if (resetSessionResult.rows.length === 0) {
+      return res.status(400).json({ error: 'Invalid or expired reset token' });
+    }
+
+    const sessionId = Number(resetSessionResult.rows[0].session_id);
+    const userId = Number(resetSessionResult.rows[0].user_id);
+    const passwordHash = await bcrypt.hash(passwordValue, 10);
+
+    await pool.query('UPDATE users SET password_hash = $1, updated_at = NOW() WHERE user_id = $2', [passwordHash, userId]);
+    await pool.query('UPDATE session SET is_valid = FALSE WHERE session_id = $1', [sessionId]);
+
+    return res.json({
+      status: 'success',
+      message: 'Password reset successful. You can now sign in with your new password.'
+    });
+  } catch (error) {
+    console.error('Reset password error:', error);
+    return res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// -------------------- Legacy compatibility endpoints --------------------
+
+// POST /api/images/upload
+// Purpose: screenshot-compatible upload endpoint (stores image only).
+app.post('/api/images/upload', authenticateToken, uploadLegacyImage, async (req, res) => {
+  const file = req.files?.image_file?.[0] || req.files?.image?.[0] || null;
+  if (!file) {
+    return res.status(400).json({ error: 'image_file is required' });
+  }
+
+  try {
+    const image = await persistImageForUser(req.user.user_id, file.path);
+    const baseUrl = `${req.protocol}://${req.get('host')}`;
+    return res.status(201).json({
+      image_id: image.image_id,
+      image_url: `${baseUrl}/${String(image.image_path || '').replace(/\\/g, '/')}`,
+      uploaded_at: image.uploaded_at
+    });
+  } catch (error) {
+    console.error('Image upload error:', error);
+    return res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// POST /api/getpredictiondetails
+// Purpose: screenshot-compatible prediction details lookup.
+app.post('/api/getpredictiondetails', authenticateToken, async (req, res) => {
+  const predictionId = Number(req.body?.prediction_id);
+  if (!predictionId) {
+    return res.status(400).json({ error: 'prediction_id is required' });
+  }
+
+  try {
+    const requesterId = Number(req.user?.user_id);
+    const isAdmin = String(req.user?.role || '').toLowerCase() === 'admin';
+    const row = await fetchPredictionDetailsById(predictionId, requesterId, isAdmin);
+    if (!row) {
+      return res.status(404).json({ error: 'Prediction not found' });
+    }
+
+    return res.json({
+      prediction_id: row.prediction_id,
+      image_id: row.image_id,
+      label: row.label,
+      confidence: row.confidence,
+      heatmap_url: row.heatmap_url,
+      suggested_solution: row.suggested_sc
+    });
+  } catch (error) {
+    console.error('Get prediction details error:', error);
+    return res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// GET /api/predictions/:predictionId
+// Purpose: frontend helper compatibility route.
+app.get('/api/predictions/:predictionId', authenticateToken, async (req, res) => {
+  const predictionId = Number(req.params.predictionId);
+  if (!predictionId) {
+    return res.status(400).json({ error: 'Invalid prediction ID' });
+  }
+
+  try {
+    const requesterId = Number(req.user?.user_id);
+    const isAdmin = String(req.user?.role || '').toLowerCase() === 'admin';
+    const row = await fetchPredictionDetailsById(predictionId, requesterId, isAdmin);
+    if (!row) {
+      return res.status(404).json({ error: 'Prediction not found' });
+    }
+
+    const baseUrl = `${req.protocol}://${req.get('host')}`;
+    return res.json({
+      prediction_id: row.prediction_id,
+      image_id: row.image_id,
+      label: row.label,
+      confidence: row.confidence,
+      heatmap_url: row.heatmap_url,
+      suggested_sc: row.suggested_sc,
+      image_url: row.image_path ? `${baseUrl}/${String(row.image_path).replace(/\\/g, '/')}` : null,
+      uploaded_at: row.uploaded_at,
+      created_at: row.created_at,
+      updated_at: row.updated_at
+    });
+  } catch (error) {
+    console.error('Get prediction endpoint error:', error);
+    return res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
 // -------------------- Analyze endpoint --------------------
 
 // POST /api/analyze
@@ -436,127 +1058,32 @@ app.post('/api/analyze', authenticateToken, upload.single('image'), async (req, 
   }
 
   try {
-    // Log file info (debugging)
-    console.log('Analyze file info', {
-      originalname: req.file.originalname,
-      mimetype: req.file.mimetype,
-      size: req.file.size,
-      path: req.file.path
+    const cropHint = String(req.body?.crop_hint || req.body?.cropHint || '').trim();
+    const { prediction } = await analyzeUploadedImageForUser({
+      file: req.file,
+      userId: req.user.user_id,
+      cropHint
     });
 
-    // 1) Build a FormData payload to send to FastAPI
-    const formData = new FormData();
-    formData.append('image', fs.createReadStream(req.file.path), {
-      filename: req.file.originalname || path.basename(req.file.path),
-      contentType: req.file.mimetype || 'application/octet-stream'
-    });
-
-    // 2) Forward image to Python service
-    console.log('Forwarding to Python service', {
-      url: `${PYTHON_SERVICE_URL}/predict`
-    });
-
-    const predictionServiceUrls = [
-      normalizeBaseUrl(PYTHON_SERVICE_URL),
-      DEFAULT_LOCAL_PYTHON_SERVICE_URL
-    ].filter((url, index, self) => Boolean(url) && self.indexOf(url) === index);
-
-    let response = null;
-    let lastServiceError = null;
-
-    for (const serviceBaseUrl of predictionServiceUrls) {
-      try {
-        response = await fetch(`${serviceBaseUrl}/predict`, {
-          method: 'POST',
-          body: formData,
-          headers: formData.getHeaders(),
-          timeout: 15000 // stop waiting after 15s
-        });
-
-        if (response.ok) {
-          break;
-        }
-
-        const text = await response.text();
-        lastServiceError = `HTTP ${response.status} from ${serviceBaseUrl}/predict`;
-        console.error('FastAPI error:', {
-          serviceBaseUrl,
-          status: response.status,
-          body: text
-        });
-        response = null;
-      } catch (serviceError) {
-        lastServiceError = serviceError.message || 'Prediction service unreachable';
-        console.error('FastAPI request failed:', {
-          serviceBaseUrl,
-          error: lastServiceError
-        });
-      }
-    }
-
-    if (!response) {
-      return res.status(500).json({
-        error: 'Prediction service error',
-        detail: lastServiceError || 'Failed to reach prediction service'
-      });
-    }
-
-    // 3) Read JSON response from FastAPI (label/confidence/heatmap_url/suggested_sc...)
-    const data = await response.json();
-
-    // 4) Save uploaded image path to DB
-    // imagePath becomes something like: "uploads/12345.png"
-    const imagePath = path.relative(__dirname, req.file.path).replace(/\\/g, '/');
-
-    const insertImageQuery = `
-      INSERT INTO image (user_id, image_path)
-      VALUES ($1, $2)
-      RETURNING image_id
-    `;
-    const imageResult = await pool.query(insertImageQuery, [req.user.user_id, imagePath]);
-    const imageId = imageResult.rows[0].image_id;
-
-    // 5) Save prediction to DB, linked to image_id
-    const insertPredictionQuery = `
-      INSERT INTO prediction (image_id, label, confidence, heatmap_url, suggested_sc)
-      VALUES ($1, $2, $3, $4, $5)
-      RETURNING prediction_id, image_id, label, confidence, heatmap_url, suggested_sc, created_at, updated_at
-    `;
-    const predictionResult = await pool.query(insertPredictionQuery, [
-      imageId,
-      data.label,
-      data.confidence,
-      data.heatmap_url || null,
-      data.suggested_sc || buildSuggestionFallback(data.label, data.confidence)
-    ]);
-
-    // 6) Return saved prediction row to frontend
-    res.json(predictionResult.rows[0]);
+    res.json(prediction);
   } catch (error) {
-    // This catch tries to extract info like axios style,
-    // but you are using node-fetch so error.response is usually undefined.
-    const status = error.response?.status || 500;
-    const detail = error.response?.data || { error: 'Prediction service error' };
-    const responseData = error.response?.data;
-    const responseStatus = error.response?.status;
-    const responseHeaders = error.response?.headers;
+    const status = Number(error?.status) || 500;
+    const errorMessage = error?.error || 'Prediction service error';
+    const detail = error?.detail || error?.message || null;
+    const hint = error?.hint || null;
 
-    console.error('Analyze error:', error.message || error);
+    console.error('Analyze error:', {
+      message: error?.message || error,
+      status,
+      detail,
+      hint
+    });
 
-    // Extra logs if upstream response exists (mostly not with node-fetch)
-    if (responseStatus || responseData || responseHeaders) {
-      console.error('Analyze upstream response:', {
-        status: responseStatus,
-        data: responseData,
-        headers: responseHeaders
-      });
-    }
-
-    res.status(status).json(
-      typeof detail === 'object' && detail !== null
-        ? detail
-        : { error: 'Prediction service error', detail }
-    );
+    return res.status(status).json({
+      error: errorMessage,
+      ...(detail ? { detail } : {}),
+      ...(hint ? { hint } : {})
+    });
   }
 });
 
@@ -568,36 +1095,72 @@ app.post('/api/analyze', authenticateToken, upload.single('image'), async (req, 
 // - call Ollama /api/generate
 // - return assistant reply
 // Protected by authenticateToken.
-app.post('/api/chat', authenticateToken, async (req, res) => {
-  // message: user text
-  // history: optional array of previous messages (role/content)
-  const { message, history, chat_id: chatIdFromBody, image_id: imageIdFromBody, prediction_id: predictionIdFromBody, topic } = req.body || {};
+app.post('/api/chat', authenticateToken, upload.single('image'), async (req, res) => {
+  const {
+    message,
+    history: historyFromBody,
+    chat_id: chatIdFromBody,
+    image_id: imageIdFromBody,
+    prediction_id: predictionIdFromBody,
+    topic,
+    crop_hint: cropHintFromBody,
+    cropHint: cropHintFromCamelCase
+  } = req.body || {};
+
   const requesterId = Number(req.user?.user_id);
   const requesterRole = String(req.user?.role || '').toLowerCase();
   const isAdmin = requesterRole === 'admin';
 
-  // Basic validation for message
-  const trimmedMessage = extractOriginalQuestion(message);
-  if (!trimmedMessage) {
-    return res.status(400).json({ error: 'Message is required' });
-  }
   if (!requesterId) {
     return res.status(401).json({ error: 'Invalid token payload' });
   }
 
-  // Keep only last 8 valid history messages (to limit tokens/cost)
-  const safeHistory = Array.isArray(history)
-    ? history
-        .filter(item => item && typeof item.role === 'string' && typeof item.content === 'string')
-        .slice(-8)
-    : [];
+  const safeHistory = parseChatHistoryInput(historyFromBody);
+  const hasUploadedImage = Boolean(req.file);
+  const trimmedMessage = extractOriginalQuestion(message);
+  if (!trimmedMessage && !hasUploadedImage) {
+    return res.status(400).json({ error: 'Message or image is required' });
+  }
+
+  const normalizedCropHint = String(cropHintFromBody || cropHintFromCamelCase || '').trim();
+  const promptMessage =
+    trimmedMessage || 'Please analyze the uploaded plant photo and suggest practical next steps.';
+  const storedUserMessage = trimmedMessage || '[Uploaded image for analysis]';
+
+  let uploadedImageId = null;
+  let uploadedPredictionId = null;
+  let imageAnalysis = null;
+  let imageAnalysisError = null;
+
+  if (hasUploadedImage) {
+    try {
+      const imageAnalysisResult = await analyzeUploadedImageForUser({
+        file: req.file,
+        userId: requesterId,
+        cropHint: normalizedCropHint
+      });
+
+      imageAnalysis = imageAnalysisResult.prediction;
+      uploadedImageId = asPositiveIntegerOrNull(imageAnalysis?.image_id);
+      uploadedPredictionId = asPositiveIntegerOrNull(imageAnalysis?.prediction_id);
+    } catch (error) {
+      imageAnalysisError = {
+        error: error?.error || 'Image analysis failed',
+        detail: error?.detail || error?.message || null,
+        hint: error?.hint || null
+      };
+      console.error('Chat image analysis error:', imageAnalysisError);
+    }
+  }
+
+  const imageContext = imageAnalysis ? buildImageAnalysisContext(imageAnalysis, normalizedCropHint) : '';
 
   let reply = '';
   let source = 'ollama';
   let providerErrorMessage = '';
 
   try {
-    const prompt = buildOllamaPrompt(safeHistory, trimmedMessage);
+    const prompt = buildOllamaPrompt(safeHistory, promptMessage, imageContext);
     const ollamaResponse = await fetch(`${OLLAMA_BASE_URL}/api/generate`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -622,7 +1185,7 @@ app.post('/api/chat', authenticateToken, async (req, res) => {
       ollamaUrl: OLLAMA_BASE_URL,
       ollamaModel: OLLAMA_MODEL
     });
-    reply = buildFallbackChatReply(trimmedMessage);
+    reply = buildFallbackChatReply(promptMessage);
     source = 'fallback';
   }
 
@@ -634,8 +1197,13 @@ app.post('/api/chat', authenticateToken, async (req, res) => {
     try {
       await dbClient.query('BEGIN');
 
-      const requestedChatId = Number(chatIdFromBody);
-      if (Number.isInteger(requestedChatId) && requestedChatId > 0) {
+      const requestedChatId = asPositiveIntegerOrNull(chatIdFromBody);
+      const requestedImageId = asPositiveIntegerOrNull(imageIdFromBody);
+      const requestedPredictionId = asPositiveIntegerOrNull(predictionIdFromBody);
+      const effectiveImageId = requestedImageId || uploadedImageId;
+      const effectivePredictionId = requestedPredictionId || uploadedPredictionId;
+
+      if (requestedChatId) {
         const existingChatQuery = `
           SELECT chat_id, user_id
           FROM ai_chat
@@ -653,14 +1221,19 @@ app.post('/api/chat', authenticateToken, async (req, res) => {
         }
 
         chatId = requestedChatId;
-      } else {
-        const parsedImageId = Number(imageIdFromBody);
-        const parsedPredictionId = Number(predictionIdFromBody);
-        const normalizedTopic = String(topic || 'general').trim().slice(0, 80) || 'general';
 
-        const imageId = Number.isInteger(parsedImageId) && parsedImageId > 0 ? parsedImageId : null;
-        const predictionId =
-          Number.isInteger(parsedPredictionId) && parsedPredictionId > 0 ? parsedPredictionId : null;
+        if (effectiveImageId || effectivePredictionId) {
+          const updateChatQuery = `
+            UPDATE ai_chat
+            SET
+              image_id = COALESCE(image_id, $2),
+              prediction_id = COALESCE(prediction_id, $3)
+            WHERE chat_id = $1
+          `;
+          await dbClient.query(updateChatQuery, [chatId, effectiveImageId, effectivePredictionId]);
+        }
+      } else {
+        const normalizedTopic = String(topic || 'general').trim().slice(0, 80) || 'general';
 
         const createChatQuery = `
           INSERT INTO ai_chat (user_id, image_id, prediction_id, topic)
@@ -669,8 +1242,8 @@ app.post('/api/chat', authenticateToken, async (req, res) => {
         `;
         const createChatResult = await dbClient.query(createChatQuery, [
           requesterId,
-          imageId,
-          predictionId,
+          effectiveImageId,
+          effectivePredictionId,
           normalizedTopic
         ]);
         chatId = createChatResult.rows[0].chat_id;
@@ -680,7 +1253,7 @@ app.post('/api/chat', authenticateToken, async (req, res) => {
         INSERT INTO ai_chatmessage (chat_id, sender, content)
         VALUES ($1, $2, $3)
       `;
-      await dbClient.query(insertMessageQuery, [chatId, 'USER', trimmedMessage]);
+      await dbClient.query(insertMessageQuery, [chatId, 'USER', storedUserMessage]);
       await dbClient.query(insertMessageQuery, [chatId, 'AI', reply]);
 
       await dbClient.query('COMMIT');
@@ -709,6 +1282,8 @@ app.post('/api/chat', authenticateToken, async (req, res) => {
     reply,
     source,
     chat_id: chatId,
+    ...(imageAnalysis ? { image_analysis: imageAnalysis } : {}),
+    ...(imageAnalysisError ? { image_analysis_error: imageAnalysisError } : {}),
     ...(providerErrorMessage && process.env.NODE_ENV !== 'production'
       ? { error: providerErrorMessage }
       : {})
@@ -791,6 +1366,277 @@ app.post('/api/predictions/:predictionId/bookmark', authenticateToken, async (re
     });
   } catch (error) {
     console.error('Bookmark toggle error:', error);
+    return res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// -------------------- Retraining endpoints --------------------
+
+// POST /api/predictions/:predictionId/flag-for-retraining
+// Purpose:
+// - Allow users to flag low-confidence predictions for admin retraining review.
+app.post('/api/predictions/:predictionId/flag-for-retraining', authenticateToken, upload.none(), async (req, res) => {
+  const predictionId = Number(req.params.predictionId);
+  if (!predictionId) {
+    return res.status(400).json({ error: 'Invalid prediction ID' });
+  }
+
+  const requesterId = Number(req.user?.user_id);
+  const requesterRole = String(req.user?.role || '').toLowerCase();
+  const isAdmin = requesterRole === 'admin';
+
+  const targetUserId = Number(req.body?.user_id || requesterId);
+  if (!targetUserId) {
+    return res.status(400).json({ error: 'Invalid user ID' });
+  }
+
+  if (!isAdmin && requesterId !== targetUserId) {
+    return res.status(403).json({ error: 'Access denied' });
+  }
+
+  const reasonRaw = String(req.body?.reason || '').trim();
+  const reason = reasonRaw ? reasonRaw.slice(0, 255) : null;
+
+  try {
+    const predictionQuery = `
+      SELECT
+        p.prediction_id,
+        p.confidence,
+        i.user_id AS owner_user_id
+      FROM prediction p
+      JOIN image i ON i.image_id = p.image_id
+      WHERE p.prediction_id = $1
+      LIMIT 1
+    `;
+    const predictionResult = await pool.query(predictionQuery, [predictionId]);
+    const predictionRow = predictionResult.rows[0];
+
+    if (!predictionRow) {
+      return res.status(404).json({ error: 'Prediction not found' });
+    }
+
+    const predictionOwnerId = Number(predictionRow.owner_user_id);
+    const confidence = Number(predictionRow.confidence);
+
+    if (!isAdmin && predictionOwnerId !== requesterId) {
+      return res.status(403).json({ error: 'Access denied' });
+    }
+
+    if (!Number.isFinite(confidence)) {
+      return res.status(400).json({ error: 'Prediction confidence is unavailable' });
+    }
+
+    if (confidence >= 0.7) {
+      return res.status(400).json({
+        error: 'Invalid retraining request',
+        detail: 'Only predictions with confidence < 70% can be flagged for retraining'
+      });
+    }
+
+    const existingQuery = `
+      SELECT queue_id
+      FROM retraining_queue
+      WHERE prediction_id = $1 AND status = 'PENDING'
+      LIMIT 1
+    `;
+    const existingResult = await pool.query(existingQuery, [predictionId]);
+    const existingQueueId = existingResult.rows[0]?.queue_id;
+
+    if (existingQueueId) {
+      return res.json({
+        success: true,
+        queue_id: existingQueueId,
+        message: 'Prediction already flagged for retraining'
+      });
+    }
+
+    const insertQuery = `
+      INSERT INTO retraining_queue
+        (prediction_id, flagged_by_user_id, confidence_score, reason, status, created_at, updated_at)
+      VALUES
+        ($1, $2, $3, $4, 'PENDING', NOW(), NOW())
+      RETURNING queue_id
+    `;
+    const insertResult = await pool.query(insertQuery, [predictionId, targetUserId, confidence, reason]);
+    const queueId = insertResult.rows[0]?.queue_id;
+
+    return res.status(201).json({
+      success: true,
+      queue_id: queueId,
+      message: 'Prediction flagged for retraining'
+    });
+  } catch (error) {
+    console.error('Flag for retraining error:', error);
+    return res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// GET /api/admin/retraining-queue
+// Purpose:
+// - Admin paginated view over retraining queue by status.
+app.get('/api/admin/retraining-queue', authenticateToken, requireAdmin, async (req, res) => {
+  const page = Math.max(Number(req.query.page) || 1, 1);
+  const perPage = Math.min(Math.max(Number(req.query.per_page) || 20, 1), 100);
+  const status = String(req.query.status || 'PENDING').trim().toUpperCase();
+  const allowedStatuses = new Set(['PENDING', 'APPROVED', 'REJECTED', 'CANCELLED']);
+
+  if (!allowedStatuses.has(status)) {
+    return res.status(400).json({ error: 'Invalid status. Use PENDING, APPROVED, REJECTED, or CANCELLED.' });
+  }
+
+  const offset = (page - 1) * perPage;
+
+  try {
+    const countQuery = `
+      SELECT COUNT(*) AS total
+      FROM retraining_queue
+      WHERE status = $1
+    `;
+    const countResult = await pool.query(countQuery, [status]);
+    const total = Number(countResult.rows[0]?.total || 0);
+
+    const queueQuery = `
+      SELECT
+        rq.queue_id,
+        rq.prediction_id,
+        rq.flagged_by_user_id,
+        rq.confidence_score,
+        rq.reason,
+        rq.status,
+        rq.admin_id,
+        rq.admin_notes,
+        rq.reviewed_at,
+        rq.created_at,
+        rq.updated_at,
+        p.image_id,
+        p.label,
+        p.confidence,
+        p.suggested_sc,
+        u.full_name,
+        u.email,
+        i.image_path,
+        i.uploaded_at
+      FROM retraining_queue rq
+      JOIN prediction p ON rq.prediction_id = p.prediction_id
+      JOIN users u ON rq.flagged_by_user_id = u.user_id
+      LEFT JOIN image i ON p.image_id = i.image_id
+      WHERE rq.status = $1
+      ORDER BY rq.created_at DESC
+      LIMIT $2 OFFSET $3
+    `;
+    const queueResult = await pool.query(queueQuery, [status, perPage, offset]);
+
+    const baseUrl = `${req.protocol}://${req.get('host')}`;
+    const items = queueResult.rows.map((row) => ({
+      ...row,
+      image_path: row.image_path ? `${baseUrl}/${String(row.image_path).replace(/\\/g, '/')}` : null
+    }));
+
+    return res.json({
+      items,
+      total,
+      page,
+      per_page: perPage,
+      pages: Math.ceil(total / perPage)
+    });
+  } catch (error) {
+    console.error('Get retraining queue error:', error);
+    return res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// PATCH /api/admin/retraining-queue/:queueId
+// Purpose:
+// - Admin approves/rejects/cancels retraining requests.
+app.patch('/api/admin/retraining-queue/:queueId', authenticateToken, requireAdmin, upload.none(), async (req, res) => {
+  const queueId = Number(req.params.queueId);
+  if (!queueId) {
+    return res.status(400).json({ error: 'Invalid queue ID' });
+  }
+
+  const status = String(req.body?.status || '').trim().toUpperCase();
+  const allowedStatuses = new Set(['APPROVED', 'REJECTED', 'CANCELLED']);
+  if (!allowedStatuses.has(status)) {
+    return res.status(400).json({ error: 'Invalid status. Use APPROVED, REJECTED, or CANCELLED.' });
+  }
+
+  const adminId = Number(req.body?.admin_id || req.user?.user_id || 0) || null;
+  const adminNotesRaw = String(req.body?.admin_notes || '').trim();
+  const adminNotes = adminNotesRaw ? adminNotesRaw : null;
+
+  try {
+    const updateQuery = `
+      UPDATE retraining_queue
+      SET
+        status = $1,
+        admin_id = $2,
+        admin_notes = $3,
+        reviewed_at = NOW(),
+        updated_at = NOW()
+      WHERE queue_id = $4
+      RETURNING queue_id, status, admin_id, admin_notes, reviewed_at, updated_at
+    `;
+    const updateResult = await pool.query(updateQuery, [status, adminId, adminNotes, queueId]);
+    const updated = updateResult.rows[0];
+
+    if (!updated) {
+      return res.status(404).json({ error: 'Retraining request not found' });
+    }
+
+    return res.json({
+      success: true,
+      message: `Retraining request ${status.toLowerCase()}`,
+      item: updated
+    });
+  } catch (error) {
+    console.error('Update retraining queue item error:', error);
+    return res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// GET /api/admin/low-confidence-predictions
+// Purpose:
+// - Admin helper endpoint listing low-confidence predictions.
+app.get('/api/admin/low-confidence-predictions', authenticateToken, requireAdmin, async (req, res) => {
+  const threshold = Math.min(Math.max(Number(req.query.threshold), 0), 1) || 0.7;
+  const limit = Math.min(Math.max(Number(req.query.limit) || 100, 1), 500);
+
+  try {
+    const lowConfidenceQuery = `
+      SELECT
+        p.prediction_id,
+        p.image_id,
+        p.label,
+        p.confidence,
+        p.suggested_sc,
+        p.created_at,
+        i.user_id,
+        i.image_path,
+        i.uploaded_at,
+        u.full_name,
+        u.email
+      FROM prediction p
+      JOIN image i ON i.image_id = p.image_id
+      JOIN users u ON u.user_id = i.user_id
+      WHERE p.confidence < $1
+      ORDER BY p.confidence ASC, p.created_at DESC
+      LIMIT $2
+    `;
+    const lowConfidenceResult = await pool.query(lowConfidenceQuery, [threshold, limit]);
+
+    const baseUrl = `${req.protocol}://${req.get('host')}`;
+    const predictions = lowConfidenceResult.rows.map((row) => ({
+      ...row,
+      image_url: row.image_path ? `${baseUrl}/${String(row.image_path).replace(/\\/g, '/')}` : null
+    }));
+
+    return res.json({
+      threshold,
+      count: predictions.length,
+      predictions
+    });
+  } catch (error) {
+    console.error('Get low-confidence predictions error:', error);
     return res.status(500).json({ error: 'Internal server error' });
   }
 });

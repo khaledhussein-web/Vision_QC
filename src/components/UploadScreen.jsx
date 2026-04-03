@@ -7,6 +7,23 @@ import { ImageWithFallback } from './figma/ImageWithFallback';
 import { toast } from 'sonner';
 import { analyzeImage } from '../utils/api';
 
+const SUPPORTED_CROP_HINTS = [
+  'apple',
+  'apricot',
+  'bean',
+  'cherry',
+  'corn',
+  'fig',
+  'grape',
+  'loquat',
+  'pear',
+  'pepper',
+  'persimmon',
+  'potato',
+  'tomato',
+  'walnut',
+];
+
 export default function UploadScreen({
   navigate,
   setSelectedImage,
@@ -18,6 +35,7 @@ export default function UploadScreen({
   const [stream, setStream] = useState(null);
   const [uploading, setUploading] = useState(false);
   const [notes, setNotes] = useState('');
+  const [cropHint, setCropHint] = useState('');
   const [selectedFile, setSelectedFile] = useState(null);
   const videoRef = useRef(null);
   const canvasRef = useRef(null);
@@ -34,6 +52,7 @@ export default function UploadScreen({
     setSelectedFile(null);
     setSelectedImage(null);
     setNotes('');
+    setCropHint('');
     if (fileInputRef.current) {
       fileInputRef.current.value = '';
     }
@@ -164,7 +183,7 @@ export default function UploadScreen({
     console.log('Sending to backend...');
 
     try {
-      const response = await analyzeImage(selectedFile);
+      const response = await analyzeImage(selectedFile, { cropHint });
       console.log('AI result:', response);
       if (onPredictionComplete && response?.label) {
         onPredictionComplete(response);
@@ -173,7 +192,10 @@ export default function UploadScreen({
         toast.error('Prediction service returned no label');
       }
     } catch (error) {
-      toast.error(error?.detail ? `Failed to analyze image: ${error.detail}` : 'Failed to analyze image');
+      const detail = typeof error?.detail === 'string' ? error.detail.trim() : '';
+      const hint = typeof error?.hint === 'string' ? error.hint.trim() : '';
+      const message = detail ? `Failed to analyze image: ${detail}` : 'Failed to analyze image';
+      toast.error(hint ? `${message} ${hint}` : message);
       console.error('Analyze error:', error);
     } finally {
       setUploading(false);
@@ -293,6 +315,7 @@ export default function UploadScreen({
                 onClick={() => {
                   setSelectedImage(null);
                   setSelectedFile(null);
+                  setCropHint('');
                   if (fileInputRef.current) {
                     fileInputRef.current.value = '';
                   }
@@ -317,6 +340,23 @@ export default function UploadScreen({
                 placeholder="Describe what you see..."
                 className="mt-1"
               />
+              <Label htmlFor="cropHint" className="text-gray-900 mb-2 mt-4 block">Crop Name (Optional but recommended)</Label>
+              <Input
+                id="cropHint"
+                value={cropHint}
+                onChange={(e) => setCropHint(e.target.value)}
+                list="supported-crop-hints"
+                placeholder="Select or type the crop to improve diagnosis"
+                className="mt-1"
+              />
+              <datalist id="supported-crop-hints">
+                {SUPPORTED_CROP_HINTS.map((cropName) => (
+                  <option key={cropName} value={cropName} />
+                ))}
+              </datalist>
+              <p className="mt-2 text-xs text-gray-500">
+                Providing the crop lets the model compare diseases within the correct plant family instead of all classes.
+              </p>
             </div>
           </div>
         )}
