@@ -22,8 +22,10 @@ const PYTHON_SERVICE_URL = process.env.PYTHON_SERVICE_URL || 'http://127.0.0.1:8
 // Ollama config for local chat endpoint
 const OLLAMA_BASE_URL = String(process.env.OLLAMA_BASE_URL || 'http://localhost:11434').trim().replace(/\/$/, '');
 const OLLAMA_MODEL = String(process.env.OLLAMA_MODEL || 'llama3').trim();
+const OLLAMA_FALLBACK_MODEL = String(process.env.OLLAMA_FALLBACK_MODEL || '').trim();
 const DEFAULT_LOCAL_PYTHON_SERVICE_URL = 'http://127.0.0.1:8000';
 const PASSWORD_RESET_TOKEN_PREFIX = 'pwreset:';
+const PASSWORD_RESET_HASH_ALGO = 'sha256';
 const PASSWORD_RESET_EXPIRY_MINUTES = Math.min(
   Math.max(Number(process.env.PASSWORD_RESET_EXPIRY_MINUTES) || 30, 5),
   180
@@ -39,6 +41,12 @@ const SMTP_PASS = String(process.env.SMTP_PASS || '').trim();
 const SMTP_FROM_NAME = String(process.env.SMTP_FROM_NAME || 'VisionQC').trim();
 const SMTP_FROM_EMAIL = String(process.env.SMTP_FROM_EMAIL || '').trim();
 const SMTP_SUBJECT = String(process.env.SMTP_SUBJECT || 'VisionQC Password Reset').trim();
+const GRAPH_TENANT_ID = String(process.env.GRAPH_TENANT_ID || '').trim();
+const GRAPH_CLIENT_ID = String(process.env.GRAPH_CLIENT_ID || '').trim();
+const GRAPH_CLIENT_SECRET = String(process.env.GRAPH_CLIENT_SECRET || '').trim();
+const GRAPH_SENDER_EMAIL = String(process.env.GRAPH_SENDER_EMAIL || '').trim().toLowerCase();
+const GRAPH_API_BASE_URL = String(process.env.GRAPH_API_BASE_URL || 'https://graph.microsoft.com/v1.0').trim().replace(/\/$/, '');
+const PASSWORD_RESET_DELIVERY_MODE = String(process.env.PASSWORD_RESET_DELIVERY_MODE || 'auto').trim().toLowerCase();
 const RESET_PASSWORD_URL = String(process.env.RESET_PASSWORD_URL || 'http://localhost:5173/reset-password').trim();
 const EXPOSE_RESET_TOKEN_IN_RESPONSE = ['1', 'true', 'yes', 'on'].includes(
   String(process.env.EXPOSE_RESET_TOKEN_IN_RESPONSE ?? (process.env.NODE_ENV !== 'production')).trim().toLowerCase()
@@ -119,11 +127,104 @@ const extractOriginalQuestion = (message) => {
   return text;
 };
 
+const normalizeActionLine = (value) =>
+  String(value || '')
+    .replace(/\*\*/g, '')
+    .replace(/`/g, '')
+    .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
+    .replace(/^[\s\-*•]+/, '')
+    .replace(/^\d+\s*[:.)-]\s*/, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .replace(/[:;,.]+$/, '');
+
+const extractSectionHeadings = (replyText) => {
+  const text = String(replyText || '');
+  const boldMatches = [...text.matchAll(/\*\*([^*\n:]{3,100}):\*\*/g)].map((match) => match[1]);
+  const plainMatches = [...text.matchAll(/(?:^|\n)\s*([A-Z][^:\n]{3,100}):\s*(?=\n|$)/gm)].map((match) => match[1]);
+  const rawCandidates = [...boldMatches, ...plainMatches];
+
+  return rawCandidates
+    .map((candidate) => normalizeActionLine(candidate))
+    .filter((candidate) => candidate.length > 3)
+    .filter((candidate) => !/^(to|tips?|steps?|instructions?|remember|note)\b/i.test(candidate));
+};
+
+const extractNumberedSteps = (replyText) => {
+  const text = String(replyText || '')
+    .replace(/\r/g, ' ')
+    .replace(/\n/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  if (!text) return [];
+
+  const matches = [
+    ...text.matchAll(/(?:^|\s)\d+\s*[:.)-]\s*(.+?)(?=(?:\s+\d+\s*[:.)-]\s)|$)/g)
+  ];
+
+  return matches
+    .map((match) => normalizeActionLine(match[1]))
+    .filter((candidate) => candidate.length > 3);
+};
+
+const extractSentences = (replyText) => {
+  const normalized = String(replyText || '')
+    .replace(/\*\*([^*]+)\*\*/g, '$1')
+    .replace(/\r/g, ' ')
+    .replace(/\n/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  if (!normalized) return [];
+
+  return (normalized.match(/[^.!?]+[.!?]?/g) || [])
+    .map((sentence) => normalizeActionLine(sentence))
+    .filter((candidate) => candidate.length > 10);
+};
+
+const formatThreeLineRecommendations = (replyText) => {
+  const candidates = [
+    ...extractSectionHeadings(replyText),
+    ...extractNumberedSteps(replyText),
+    ...extractSentences(replyText)
+  ];
+
+  const unique = [];
+  const seen = new Set();
+
+  for (const candidate of candidates) {
+    const normalized = normalizeActionLine(candidate);
+    const key = normalized.toLowerCase();
+    if (!normalized || seen.has(key)) continue;
+    seen.add(key);
+    unique.push(normalized);
+    if (unique.length === 3) break;
+  }
+
+  const fallbackLines = [
+    'Remove the most affected leaves and keep the area clean',
+    'Water at the base and avoid wetting foliage',
+    'Apply a crop-appropriate treatment and monitor progress'
+  ];
+
+  while (unique.length < 3) {
+    unique.push(fallbackLines[unique.length]);
+  }
+
+  return unique
+    .slice(0, 3)
+    .map((line, index) => `${index + 1}: ${line}`)
+    .join('\n');
+};
+
 const buildOllamaPrompt = (history, userMessage, imageContext = '') => {
   const systemPrompt =
     'You are VisionQC, an AI assistant for plant disease detection. ' +
     'Provide concise, practical guidance. If unsure, ask for a clear photo and suggest using the Upload screen for analysis. ' +
-    'Avoid medical claims; this is general plant-care advice.';
+    'Avoid medical claims; this is general plant-care advice. ' +
+    'When giving advice or recommendations, always format the final answer as exactly 3 numbered lines in this style: ' +
+    '"1: ...", "2: ...", "3: ...". Do not use bullet points, markdown headings, or extra sections.';
 
   const historyText = (Array.isArray(history) ? history : [])
     .map((item) => {
@@ -145,6 +246,29 @@ const buildOllamaPrompt = (history, userMessage, imageContext = '') => {
   ]
     .filter(Boolean)
     .join('\n\n');
+};
+
+const generateWithOllama = async ({ model, prompt }) => {
+  const ollamaResponse = await fetch(`${OLLAMA_BASE_URL}/api/generate`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      model,
+      prompt,
+      stream: false
+    })
+  });
+
+  if (!ollamaResponse.ok) {
+    const errorBody = await ollamaResponse.text();
+    const error = new Error(`Ollama error ${ollamaResponse.status}: ${errorBody}`);
+    error.ollamaStatus = ollamaResponse.status;
+    error.ollamaBody = errorBody;
+    throw error;
+  }
+
+  const data = await ollamaResponse.json();
+  return String(data?.response || '').trim() || 'Sorry, I could not generate a response.';
 };
 
 const normalizeBaseUrl = (urlValue) => String(urlValue || '').trim().replace(/\/$/, '');
@@ -412,6 +536,23 @@ const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
 });
 
+const ensureSessionSchema = async () => {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS session (
+      session_id INT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+      user_id INT NOT NULL,
+      token VARCHAR(255) NOT NULL UNIQUE,
+      expires_at TIMESTAMP NOT NULL,
+      is_valid BOOLEAN NOT NULL DEFAULT TRUE,
+      created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+      CONSTRAINT fk_session_user FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
+    )
+  `);
+
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_session_user_id ON session(user_id)`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_session_token_validity ON session(token, is_valid, expires_at)`);
+};
+
 const ensureRetrainingQueueSchema = async () => {
   await pool.query(`
     CREATE TABLE IF NOT EXISTS retraining_queue (
@@ -438,6 +579,49 @@ const ensureRetrainingQueueSchema = async () => {
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_retraining_queue_created_at ON retraining_queue(created_at DESC)`);
 };
 
+const ensureRoleSeed = async () => {
+  const roleNames = ['user', 'operator', 'annotator', 'admin'];
+  for (const roleName of roleNames) {
+    await pool.query(
+      `
+      INSERT INTO role (name)
+      SELECT $1::VARCHAR(30)
+      WHERE NOT EXISTS (
+        SELECT 1
+        FROM role
+        WHERE LOWER(name) = LOWER($1::VARCHAR(30))
+      )
+      `,
+      [roleName]
+    );
+  }
+};
+
+const ensureAnnotatorCorrectionSchema = async () => {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS annotator_correction (
+      correction_id INT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+      queue_id INT NULL,
+      prediction_id INT NOT NULL,
+      annotator_id INT NOT NULL,
+      corrected_label VARCHAR(120) NOT NULL,
+      notes TEXT NULL,
+      status VARCHAR(20) NOT NULL DEFAULT 'SUBMITTED',
+      created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMP NOT NULL DEFAULT NOW(),
+      CONSTRAINT fk_ac_queue FOREIGN KEY (queue_id) REFERENCES retraining_queue(queue_id) ON DELETE SET NULL,
+      CONSTRAINT fk_ac_prediction FOREIGN KEY (prediction_id) REFERENCES prediction(prediction_id) ON DELETE CASCADE,
+      CONSTRAINT fk_ac_annotator FOREIGN KEY (annotator_id) REFERENCES users(user_id) ON DELETE CASCADE,
+      CONSTRAINT uq_ac_prediction_annotator UNIQUE (prediction_id, annotator_id)
+    )
+  `);
+
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_ac_queue_id ON annotator_correction(queue_id)`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_ac_prediction_id ON annotator_correction(prediction_id)`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_ac_annotator_id ON annotator_correction(annotator_id)`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_ac_updated_at ON annotator_correction(updated_at DESC)`);
+};
+
 // -------------------- Test database connection --------------------
 
 // pool.connect tries to get a client from the pool (to confirm DB is reachable)
@@ -452,13 +636,25 @@ pool.connect((err, client, release) => {
   release();
 });
 
-ensureRetrainingQueueSchema()
-  .then(() => {
+const verifyStartupSchemas = async () => {
+  try {
+    await ensureSessionSchema();
+    console.log('Session schema verified');
+
+    await ensureRetrainingQueueSchema();
     console.log('Retraining queue schema verified');
-  })
-  .catch((schemaError) => {
-    console.error('Failed to verify retraining queue schema:', schemaError);
-  });
+
+    await ensureRoleSeed();
+    console.log('Role seed verified');
+
+    await ensureAnnotatorCorrectionSchema();
+    console.log('Annotator correction schema verified');
+  } catch (schemaError) {
+    console.error('Failed to verify startup schemas:', schemaError);
+  }
+};
+
+verifyStartupSchemas();
 
 // -------------------- Login endpoint --------------------
 
@@ -566,8 +762,17 @@ const requireAdmin = (req, res, next) => {
   return next();
 };
 
+// Purpose: allow annotator and admin roles.
+const requireAnnotatorOrAdmin = (req, res, next) => {
+  const role = String(req.user?.role || '').toLowerCase();
+  if (role !== 'annotator' && role !== 'admin') {
+    return res.status(403).json({ error: 'Annotator access required' });
+  }
+  return next();
+};
+
 const normalizeRoleName = (roleValue) => String(roleValue || '').trim().toLowerCase();
-const ALLOWED_ROLES = new Set(['user', 'admin']);
+const ALLOWED_ROLES = new Set(['user', 'operator', 'annotator', 'admin']);
 const ALLOWED_USER_STATUSES = new Set(['ACTIVE', 'INACTIVE', 'SUSPENDED']);
 
 const isValidEmail = (emailValue) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(emailValue);
@@ -593,10 +798,66 @@ const getRoleIdByName = async (roleName) => {
   return roleResult.rows[0].role_id;
 };
 
-const generatePasswordResetToken = () => `${PASSWORD_RESET_TOKEN_PREFIX}${crypto.randomBytes(32).toString('hex')}`;
+const normalizePasswordResetTokenInput = (tokenValue) => {
+  const rawToken = String(tokenValue || '').trim();
+  if (!rawToken) return '';
+  if (rawToken.startsWith(PASSWORD_RESET_TOKEN_PREFIX)) {
+    return rawToken.slice(PASSWORD_RESET_TOKEN_PREFIX.length).trim();
+  }
+  return rawToken;
+};
+
+const generatePasswordResetToken = () => crypto.randomBytes(32).toString('hex');
+
+const buildStoredPasswordResetToken = (tokenValue) =>
+  `${PASSWORD_RESET_TOKEN_PREFIX}${crypto
+    .createHash(PASSWORD_RESET_HASH_ALGO)
+    .update(String(tokenValue || ''))
+    .digest('hex')}`;
+
+const getPasswordResetTokenCandidates = (tokenValue) => {
+  const rawToken = String(tokenValue || '').trim();
+  const normalizedToken = normalizePasswordResetTokenInput(rawToken);
+  if (!normalizedToken) return [];
+
+  const candidates = [buildStoredPasswordResetToken(normalizedToken)];
+
+  // Keep backward compatibility with already-issued plaintext tokens.
+  if (rawToken) {
+    candidates.push(rawToken);
+  }
+  if (normalizedToken !== rawToken) {
+    candidates.push(normalizedToken);
+  }
+
+  return [...new Set(candidates)];
+};
+
+const findValidPasswordResetSession = async (tokenValue) => {
+  const tokenCandidates = getPasswordResetTokenCandidates(tokenValue);
+  if (tokenCandidates.length === 0) {
+    return null;
+  }
+
+  const sessionResult = await pool.query(
+    `
+      SELECT session_id, user_id, expires_at
+      FROM session
+      WHERE token = ANY($1::varchar[])
+        AND is_valid = TRUE
+        AND expires_at > NOW()
+      ORDER BY created_at DESC
+      LIMIT 1
+    `,
+    [tokenCandidates]
+  );
+
+  return sessionResult.rows[0] || null;
+};
 
 const issuePasswordResetToken = async (userId) => {
   const tokenValue = generatePasswordResetToken();
+  const storedToken = buildStoredPasswordResetToken(tokenValue);
   const expiryInterval = `${PASSWORD_RESET_EXPIRY_MINUTES} minutes`;
 
   await pool.query(
@@ -614,12 +875,15 @@ const issuePasswordResetToken = async (userId) => {
     `
       INSERT INTO session (user_id, token, expires_at, is_valid)
       VALUES ($1, $2, NOW() + $3::interval, TRUE)
-      RETURNING token, expires_at
+      RETURNING expires_at
     `,
-    [userId, tokenValue, expiryInterval]
+    [userId, storedToken, expiryInterval]
   );
 
-  return insertResult.rows[0];
+  return {
+    token: tokenValue,
+    expires_at: insertResult.rows[0].expires_at
+  };
 };
 
 const buildPasswordResetUrl = (tokenValue) => {
@@ -637,6 +901,41 @@ const buildPasswordResetUrl = (tokenValue) => {
 };
 
 let smtpTransporter = null;
+let graphAccessTokenCache = {
+  accessToken: '',
+  expiresAt: 0
+};
+
+const buildPasswordResetEmailPayload = ({ resetUrl, expiresAt, fullName = '' }) => {
+  const recipientName = String(fullName || '').trim();
+  const displayName = recipientName || 'there';
+  const expiryIso = new Date(expiresAt).toISOString();
+  const subject = SMTP_SUBJECT;
+  const textBody = [
+    `Hello ${displayName},`,
+    '',
+    'We received a request to reset your VisionQC password.',
+    `Reset link: ${resetUrl}`,
+    `Expires at: ${expiryIso}`,
+    '',
+    'If you did not request this, please ignore this email.'
+  ].join('\n');
+  const htmlBody = `
+    <p>Hello ${displayName},</p>
+    <p>We received a request to reset your VisionQC password.</p>
+    <p><a href="${resetUrl}">Reset your password</a></p>
+    <p>If the button does not open, use this URL:</p>
+    <p>${resetUrl}</p>
+    <p>This link expires at ${expiryIso}.</p>
+    <p>If you did not request this, please ignore this email.</p>
+  `;
+
+  return {
+    subject,
+    textBody,
+    htmlBody
+  };
+};
 
 const getSmtpTransporter = () => {
   if (smtpTransporter) {
@@ -682,28 +981,11 @@ const sendPasswordResetEmailViaSmtp = async ({ email, resetUrl, expiresAt, fullN
   }
 
   const recipientEmail = String(email || '').trim().toLowerCase();
-  const recipientName = String(fullName || '').trim();
-  const displayName = recipientName || 'there';
-  const expiryIso = new Date(expiresAt).toISOString();
-  const subject = SMTP_SUBJECT;
-  const textBody = [
-    `Hello ${displayName},`,
-    '',
-    'We received a request to reset your VisionQC password.',
-    `Reset link: ${resetUrl}`,
-    `Expires at: ${expiryIso}`,
-    '',
-    'If you did not request this, please ignore this email.'
-  ].join('\n');
-  const htmlBody = `
-    <p>Hello ${displayName},</p>
-    <p>We received a request to reset your VisionQC password.</p>
-    <p><a href="${resetUrl}">Reset your password</a></p>
-    <p>If the button does not open, use this URL:</p>
-    <p>${resetUrl}</p>
-    <p>This link expires at ${expiryIso}.</p>
-    <p>If you did not request this, please ignore this email.</p>
-  `;
+  const { subject, textBody, htmlBody } = buildPasswordResetEmailPayload({
+    resetUrl,
+    expiresAt,
+    fullName
+  });
 
   try {
     const result = await transporter.sendMail({
@@ -731,6 +1013,217 @@ const sendPasswordResetEmailViaSmtp = async ({ email, resetUrl, expiresAt, fullN
       provider_message: error?.message || 'Failed to send SMTP email'
     };
   }
+};
+
+const isGraphEmailConfigured = () =>
+  Boolean(GRAPH_TENANT_ID && GRAPH_CLIENT_ID && GRAPH_CLIENT_SECRET && GRAPH_SENDER_EMAIL);
+
+const getMicrosoftGraphAccessToken = async () => {
+  if (!isGraphEmailConfigured()) {
+    return {
+      accessToken: '',
+      error: {
+        reason: 'graph_not_configured'
+      }
+    };
+  }
+
+  if (
+    graphAccessTokenCache.accessToken &&
+    graphAccessTokenCache.expiresAt > Date.now() + 30 * 1000
+  ) {
+    return {
+      accessToken: graphAccessTokenCache.accessToken
+    };
+  }
+
+  const tokenEndpoint = `https://login.microsoftonline.com/${encodeURIComponent(
+    GRAPH_TENANT_ID
+  )}/oauth2/v2.0/token`;
+  const tokenRequestBody = new URLSearchParams({
+    client_id: GRAPH_CLIENT_ID,
+    client_secret: GRAPH_CLIENT_SECRET,
+    scope: 'https://graph.microsoft.com/.default',
+    grant_type: 'client_credentials'
+  });
+
+  try {
+    const tokenResponse = await fetch(tokenEndpoint, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded'
+      },
+      body: tokenRequestBody.toString()
+    });
+
+    const rawTokenBody = await tokenResponse.text().catch(() => '');
+    let tokenPayload = {};
+    try {
+      tokenPayload = rawTokenBody ? JSON.parse(rawTokenBody) : {};
+    } catch (_error) {
+      tokenPayload = {};
+    }
+
+    if (!tokenResponse.ok || !tokenPayload?.access_token) {
+      return {
+        accessToken: '',
+        error: {
+          reason: 'graph_token_request_failed',
+          provider_status: tokenResponse.status,
+          provider_message:
+            tokenPayload?.error_description ||
+            tokenPayload?.error?.message ||
+            tokenResponse.statusText ||
+            rawTokenBody ||
+            'Unable to acquire Microsoft Graph access token'
+        }
+      };
+    }
+
+    const expiresInSeconds = Number(tokenPayload.expires_in || 3600);
+    graphAccessTokenCache = {
+      accessToken: tokenPayload.access_token,
+      expiresAt: Date.now() + Math.max(expiresInSeconds - 60, 60) * 1000
+    };
+
+    return {
+      accessToken: graphAccessTokenCache.accessToken
+    };
+  } catch (error) {
+    return {
+      accessToken: '',
+      error: {
+        reason: 'graph_token_request_failed',
+        provider_message: error?.message || 'Microsoft Graph token request failed'
+      }
+    };
+  }
+};
+
+const sendPasswordResetEmailViaGraph = async ({ email, resetUrl, expiresAt, fullName = '' }) => {
+  if (!isGraphEmailConfigured()) {
+    return {
+      sent: false,
+      reason: 'graph_not_configured'
+    };
+  }
+
+  const recipientEmail = String(email || '').trim().toLowerCase();
+  const { subject, htmlBody } = buildPasswordResetEmailPayload({
+    resetUrl,
+    expiresAt,
+    fullName
+  });
+
+  const tokenResult = await getMicrosoftGraphAccessToken();
+  if (!tokenResult.accessToken) {
+    return {
+      sent: false,
+      reason: tokenResult.error?.reason || 'graph_token_request_failed',
+      provider_status: tokenResult.error?.provider_status,
+      provider_message: tokenResult.error?.provider_message
+    };
+  }
+
+  const graphEndpoint = `${GRAPH_API_BASE_URL}/users/${encodeURIComponent(GRAPH_SENDER_EMAIL)}/sendMail`;
+  const graphPayload = {
+    message: {
+      subject,
+      body: {
+        contentType: 'HTML',
+        content: htmlBody
+      },
+      toRecipients: [
+        {
+          emailAddress: {
+            address: recipientEmail
+          }
+        }
+      ]
+    },
+    saveToSentItems: false
+  };
+
+  try {
+    const graphResponse = await fetch(graphEndpoint, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${tokenResult.accessToken}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify(graphPayload)
+    });
+
+    if (graphResponse.status === 202) {
+      return {
+        sent: true
+      };
+    }
+
+    const rawGraphBody = await graphResponse.text().catch(() => '');
+    let graphData = {};
+    try {
+      graphData = rawGraphBody ? JSON.parse(rawGraphBody) : {};
+    } catch (_error) {
+      graphData = {};
+    }
+
+    return {
+      sent: false,
+      reason: 'graph_send_failed',
+      provider_status: graphResponse.status,
+      provider_message:
+        graphData?.error?.message ||
+        graphResponse.statusText ||
+        rawGraphBody ||
+        'Microsoft Graph sendMail request failed'
+    };
+  } catch (error) {
+    return {
+      sent: false,
+      reason: 'graph_send_failed',
+      provider_message: error?.message || 'Microsoft Graph sendMail request failed'
+    };
+  }
+};
+
+const sendPasswordResetEmail = async ({ email, resetUrl, expiresAt, fullName = '' }) => {
+  const payload = { email, resetUrl, expiresAt, fullName };
+  const mode = PASSWORD_RESET_DELIVERY_MODE;
+
+  if (mode === 'graph') {
+    return sendPasswordResetEmailViaGraph(payload);
+  }
+
+  if (mode === 'smtp') {
+    return sendPasswordResetEmailViaSmtp(payload);
+  }
+
+  // auto mode: try Graph first, then fallback to SMTP
+  const graphDelivery = await sendPasswordResetEmailViaGraph(payload);
+  if (graphDelivery.sent) {
+    return {
+      ...graphDelivery,
+      provider: 'graph'
+    };
+  }
+
+  const smtpDelivery = await sendPasswordResetEmailViaSmtp(payload);
+  if (smtpDelivery.sent) {
+    return {
+      ...smtpDelivery,
+      provider: 'smtp'
+    };
+  }
+
+  return {
+    sent: false,
+    reason: smtpDelivery.reason || graphDelivery.reason || 'delivery_failed',
+    provider_message: smtpDelivery.provider_message || graphDelivery.provider_message,
+    provider_status: smtpDelivery.provider_status || graphDelivery.provider_status,
+    graph_reason: graphDelivery.reason,
+    smtp_reason: smtpDelivery.reason
+  };
 };
 
 // -------------------- Register endpoint --------------------
@@ -859,7 +1352,7 @@ app.post('/api/auth/forgot-password', async (req, res) => {
     const fullName = String(userResult.rows[0].full_name || '').trim();
     const resetTokenRow = await issuePasswordResetToken(userId);
     const resetUrl = buildPasswordResetUrl(resetTokenRow.token);
-    const delivery = await sendPasswordResetEmailViaSmtp({
+    const delivery = await sendPasswordResetEmail({
       email: normalizedEmail,
       resetUrl,
       expiresAt: resetTokenRow.expires_at,
@@ -892,6 +1385,31 @@ app.post('/api/auth/forgot-password', async (req, res) => {
   }
 });
 
+// GET /api/auth/reset-password/validate
+// Purpose: verify whether a reset token exists and is still valid.
+app.get('/api/auth/reset-password/validate', async (req, res) => {
+  const tokenValue = typeof req.query?.token === 'string' ? req.query.token.trim() : '';
+  if (!tokenValue) {
+    return res.status(400).json({ error: 'token query parameter is required' });
+  }
+
+  try {
+    const resetSession = await findValidPasswordResetSession(tokenValue);
+    if (!resetSession) {
+      return res.status(400).json({ error: 'Invalid or expired reset token' });
+    }
+
+    return res.json({
+      status: 'success',
+      message: 'Reset token is valid',
+      expires_at: resetSession.expires_at
+    });
+  } catch (error) {
+    console.error('Validate reset token error:', error);
+    return res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
 // POST /api/auth/reset-password
 // Purpose: validate reset token and set a new password.
 app.post('/api/auth/reset-password', async (req, res) => {
@@ -913,28 +1431,38 @@ app.post('/api/auth/reset-password', async (req, res) => {
   }
 
   try {
-    const resetSessionResult = await pool.query(
-      `
-        SELECT session_id, user_id
-        FROM session
-        WHERE token = $1
-          AND is_valid = TRUE
-          AND expires_at > NOW()
-        LIMIT 1
-      `,
-      [tokenValue]
-    );
-
-    if (resetSessionResult.rows.length === 0) {
+    const resetSession = await findValidPasswordResetSession(tokenValue);
+    if (!resetSession) {
       return res.status(400).json({ error: 'Invalid or expired reset token' });
     }
 
-    const sessionId = Number(resetSessionResult.rows[0].session_id);
-    const userId = Number(resetSessionResult.rows[0].user_id);
+    const userId = Number(resetSession.user_id);
     const passwordHash = await bcrypt.hash(passwordValue, 10);
+    const dbClient = await pool.connect();
 
-    await pool.query('UPDATE users SET password_hash = $1, updated_at = NOW() WHERE user_id = $2', [passwordHash, userId]);
-    await pool.query('UPDATE session SET is_valid = FALSE WHERE session_id = $1', [sessionId]);
+    try {
+      await dbClient.query('BEGIN');
+      await dbClient.query(
+        'UPDATE users SET password_hash = $1, updated_at = NOW() WHERE user_id = $2',
+        [passwordHash, userId]
+      );
+      await dbClient.query(
+        `
+          UPDATE session
+          SET is_valid = FALSE
+          WHERE user_id = $1
+            AND token LIKE $2
+            AND is_valid = TRUE
+        `,
+        [userId, `${PASSWORD_RESET_TOKEN_PREFIX}%`]
+      );
+      await dbClient.query('COMMIT');
+    } catch (transactionError) {
+      await dbClient.query('ROLLBACK');
+      throw transactionError;
+    } finally {
+      dbClient.release();
+    }
 
     return res.json({
       status: 'success',
@@ -1117,6 +1645,9 @@ app.post('/api/chat', authenticateToken, upload.single('image'), async (req, res
 
   const safeHistory = parseChatHistoryInput(historyFromBody);
   const hasUploadedImage = Boolean(req.file);
+  const requestedChatId = asPositiveIntegerOrNull(chatIdFromBody);
+  const requestedImageId = asPositiveIntegerOrNull(imageIdFromBody);
+  const requestedPredictionId = asPositiveIntegerOrNull(predictionIdFromBody);
   const trimmedMessage = extractOriginalQuestion(message);
   if (!trimmedMessage && !hasUploadedImage) {
     return res.status(400).json({ error: 'Message or image is required' });
@@ -1129,6 +1660,8 @@ app.post('/api/chat', authenticateToken, upload.single('image'), async (req, res
 
   let uploadedImageId = null;
   let uploadedPredictionId = null;
+  let predictionContext = null;
+  let inferredImageIdFromPrediction = null;
   let imageAnalysis = null;
   let imageAnalysisError = null;
 
@@ -1141,6 +1674,7 @@ app.post('/api/chat', authenticateToken, upload.single('image'), async (req, res
       });
 
       imageAnalysis = imageAnalysisResult.prediction;
+      predictionContext = imageAnalysis;
       uploadedImageId = asPositiveIntegerOrNull(imageAnalysis?.image_id);
       uploadedPredictionId = asPositiveIntegerOrNull(imageAnalysis?.prediction_id);
     } catch (error) {
@@ -1153,40 +1687,79 @@ app.post('/api/chat', authenticateToken, upload.single('image'), async (req, res
     }
   }
 
-  const imageContext = imageAnalysis ? buildImageAnalysisContext(imageAnalysis, normalizedCropHint) : '';
+  if (!predictionContext && requestedPredictionId) {
+    try {
+      const predictionRow = await fetchPredictionDetailsById(
+        requestedPredictionId,
+        requesterId,
+        isAdmin
+      );
+
+      if (predictionRow) {
+        predictionContext = {
+          prediction_id: predictionRow.prediction_id,
+          image_id: predictionRow.image_id,
+          label: predictionRow.label,
+          confidence: predictionRow.confidence,
+          suggested_sc: predictionRow.suggested_sc
+        };
+        inferredImageIdFromPrediction = asPositiveIntegerOrNull(predictionRow.image_id);
+      }
+    } catch (contextError) {
+      console.error('Chat prediction context lookup error:', contextError);
+    }
+  }
+
+  const imageContext = predictionContext
+    ? buildImageAnalysisContext(predictionContext, normalizedCropHint)
+    : '';
 
   let reply = '';
   let source = 'ollama';
   let providerErrorMessage = '';
+  let activeOllamaModel = OLLAMA_MODEL;
 
   try {
     const prompt = buildOllamaPrompt(safeHistory, promptMessage, imageContext);
-    const ollamaResponse = await fetch(`${OLLAMA_BASE_URL}/api/generate`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        model: OLLAMA_MODEL,
-        prompt,
-        stream: false
-      })
-    });
+    try {
+      reply = await generateWithOllama({
+        model: activeOllamaModel,
+        prompt
+      });
+    } catch (primaryError) {
+      const errorMessage = String(primaryError?.message || '');
+      const memoryError = /requires more system memory|insufficient memory/i.test(errorMessage);
+      const canUseFallback =
+        memoryError &&
+        OLLAMA_FALLBACK_MODEL &&
+        OLLAMA_FALLBACK_MODEL.toLowerCase() !== activeOllamaModel.toLowerCase();
 
-    if (!ollamaResponse.ok) {
-      const errorBody = await ollamaResponse.text();
-      throw new Error(`Ollama error ${ollamaResponse.status}: ${errorBody}`);
+      if (!canUseFallback) {
+        throw primaryError;
+      }
+
+      activeOllamaModel = OLLAMA_FALLBACK_MODEL;
+      reply = await generateWithOllama({
+        model: activeOllamaModel,
+        prompt
+      });
+      source = 'ollama';
     }
-
-    const data = await ollamaResponse.json();
-    reply = String(data?.response || '').trim() || 'Sorry, I could not generate a response.';
   } catch (error) {
     providerErrorMessage = error?.message || 'Chat service error';
     console.error('Chat error:', {
       message: providerErrorMessage,
       ollamaUrl: OLLAMA_BASE_URL,
-      ollamaModel: OLLAMA_MODEL
+      ollamaModel: activeOllamaModel,
+      configuredOllamaModel: OLLAMA_MODEL,
+      fallbackOllamaModel: OLLAMA_FALLBACK_MODEL || null
     });
     reply = buildFallbackChatReply(promptMessage);
     source = 'fallback';
+  }
+
+  if (predictionContext) {
+    reply = formatThreeLineRecommendations(reply);
   }
 
   let chatId = null;
@@ -1197,11 +1770,9 @@ app.post('/api/chat', authenticateToken, upload.single('image'), async (req, res
     try {
       await dbClient.query('BEGIN');
 
-      const requestedChatId = asPositiveIntegerOrNull(chatIdFromBody);
-      const requestedImageId = asPositiveIntegerOrNull(imageIdFromBody);
-      const requestedPredictionId = asPositiveIntegerOrNull(predictionIdFromBody);
-      const effectiveImageId = requestedImageId || uploadedImageId;
-      const effectivePredictionId = requestedPredictionId || uploadedPredictionId;
+      const contextPredictionId = asPositiveIntegerOrNull(predictionContext?.prediction_id);
+      const effectiveImageId = requestedImageId || uploadedImageId || inferredImageIdFromPrediction;
+      const effectivePredictionId = requestedPredictionId || uploadedPredictionId || contextPredictionId;
 
       if (requestedChatId) {
         const existingChatQuery = `
@@ -1467,6 +2038,339 @@ app.post('/api/predictions/:predictionId/flag-for-retraining', authenticateToken
     });
   } catch (error) {
     console.error('Flag for retraining error:', error);
+    return res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// -------------------- Annotator endpoints --------------------
+
+// GET /api/annotator/queue
+// Purpose:
+// - Annotator/admin paginated queue over retraining requests.
+// - Shows annotator's current correction (if any) plus latest correction summary.
+app.get('/api/annotator/queue', authenticateToken, requireAnnotatorOrAdmin, async (req, res) => {
+  const page = Math.max(Number(req.query.page) || 1, 1);
+  const perPage = Math.min(Math.max(Number(req.query.per_page) || 20, 1), 100);
+  const status = String(req.query.status || 'PENDING').trim().toUpperCase();
+  const allowedStatuses = new Set(['PENDING', 'APPROVED', 'REJECTED', 'CANCELLED']);
+  const annotatorId = Number(req.user?.user_id);
+
+  if (!allowedStatuses.has(status)) {
+    return res.status(400).json({ error: 'Invalid status. Use PENDING, APPROVED, REJECTED, or CANCELLED.' });
+  }
+
+  if (!annotatorId) {
+    return res.status(401).json({ error: 'Invalid token payload' });
+  }
+
+  const offset = (page - 1) * perPage;
+
+  try {
+    const countResult = await pool.query(
+      `
+      SELECT COUNT(*) AS total
+      FROM retraining_queue
+      WHERE status = $1
+      `,
+      [status]
+    );
+    const total = Number(countResult.rows[0]?.total || 0);
+
+    const queueResult = await pool.query(
+      `
+      SELECT
+        rq.queue_id,
+        rq.prediction_id,
+        rq.flagged_by_user_id,
+        rq.confidence_score,
+        rq.reason,
+        rq.status,
+        rq.created_at,
+        rq.updated_at,
+        p.image_id,
+        p.label,
+        p.confidence,
+        p.suggested_sc,
+        u.full_name,
+        u.email,
+        i.image_path,
+        i.uploaded_at,
+        ac.correction_id,
+        ac.corrected_label,
+        ac.notes AS annotator_notes,
+        ac.updated_at AS correction_updated_at,
+        COALESCE(corr_stats.total_corrections, 0) AS total_corrections,
+        latest_any.corrected_label AS latest_corrected_label,
+        latest_any.updated_at AS latest_correction_at,
+        latest_any.annotator_id AS latest_annotator_id
+      FROM retraining_queue rq
+      JOIN prediction p ON rq.prediction_id = p.prediction_id
+      JOIN users u ON rq.flagged_by_user_id = u.user_id
+      LEFT JOIN image i ON p.image_id = i.image_id
+      LEFT JOIN annotator_correction ac
+        ON ac.queue_id = rq.queue_id
+       AND ac.annotator_id = $4
+      LEFT JOIN LATERAL (
+        SELECT
+          ac2.corrected_label,
+          ac2.updated_at,
+          ac2.annotator_id
+        FROM annotator_correction ac2
+        WHERE ac2.queue_id = rq.queue_id
+        ORDER BY ac2.updated_at DESC
+        LIMIT 1
+      ) latest_any ON TRUE
+      LEFT JOIN LATERAL (
+        SELECT COUNT(*)::INT AS total_corrections
+        FROM annotator_correction ac3
+        WHERE ac3.queue_id = rq.queue_id
+      ) corr_stats ON TRUE
+      WHERE rq.status = $1
+      ORDER BY rq.created_at DESC
+      LIMIT $2 OFFSET $3
+      `,
+      [status, perPage, offset, annotatorId]
+    );
+
+    const baseUrl = `${req.protocol}://${req.get('host')}`;
+    const items = queueResult.rows.map((row) => ({
+      ...row,
+      image_path: row.image_path ? `${baseUrl}/${String(row.image_path).replace(/\\/g, '/')}` : null
+    }));
+
+    return res.json({
+      items,
+      total,
+      page,
+      per_page: perPage,
+      pages: Math.ceil(total / perPage)
+    });
+  } catch (error) {
+    console.error('Get annotator queue error:', error);
+    return res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// GET /api/annotator/queue/:queueId
+// Purpose:
+// - Return a single queue item with recent corrections.
+app.get('/api/annotator/queue/:queueId', authenticateToken, requireAnnotatorOrAdmin, async (req, res) => {
+  const queueId = Number(req.params.queueId);
+  const annotatorId = Number(req.user?.user_id);
+
+  if (!queueId) {
+    return res.status(400).json({ error: 'Invalid queue ID' });
+  }
+  if (!annotatorId) {
+    return res.status(401).json({ error: 'Invalid token payload' });
+  }
+
+  try {
+    const queueResult = await pool.query(
+      `
+      SELECT
+        rq.queue_id,
+        rq.prediction_id,
+        rq.flagged_by_user_id,
+        rq.confidence_score,
+        rq.reason,
+        rq.status,
+        rq.created_at,
+        rq.updated_at,
+        p.image_id,
+        p.label,
+        p.confidence,
+        p.suggested_sc,
+        u.full_name,
+        u.email,
+        i.image_path,
+        i.uploaded_at,
+        ac.correction_id,
+        ac.corrected_label,
+        ac.notes AS annotator_notes,
+        ac.updated_at AS correction_updated_at
+      FROM retraining_queue rq
+      JOIN prediction p ON rq.prediction_id = p.prediction_id
+      JOIN users u ON rq.flagged_by_user_id = u.user_id
+      LEFT JOIN image i ON p.image_id = i.image_id
+      LEFT JOIN annotator_correction ac
+        ON ac.queue_id = rq.queue_id
+       AND ac.annotator_id = $2
+      WHERE rq.queue_id = $1
+      LIMIT 1
+      `,
+      [queueId, annotatorId]
+    );
+
+    const item = queueResult.rows[0];
+    if (!item) {
+      return res.status(404).json({ error: 'Queue item not found' });
+    }
+
+    const recentCorrectionsResult = await pool.query(
+      `
+      SELECT
+        ac.correction_id,
+        ac.queue_id,
+        ac.prediction_id,
+        ac.annotator_id,
+        au.full_name AS annotator_name,
+        au.email AS annotator_email,
+        ac.corrected_label,
+        ac.notes,
+        ac.status,
+        ac.created_at,
+        ac.updated_at
+      FROM annotator_correction ac
+      JOIN users au ON au.user_id = ac.annotator_id
+      WHERE ac.queue_id = $1
+      ORDER BY ac.updated_at DESC
+      LIMIT 10
+      `,
+      [queueId]
+    );
+
+    const baseUrl = `${req.protocol}://${req.get('host')}`;
+    return res.json({
+      item: {
+        ...item,
+        image_path: item.image_path ? `${baseUrl}/${String(item.image_path).replace(/\\/g, '/')}` : null
+      },
+      recent_corrections: recentCorrectionsResult.rows
+    });
+  } catch (error) {
+    console.error('Get annotator queue item error:', error);
+    return res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// POST /api/annotator/corrections
+// Purpose:
+// - Annotator/admin submits or updates a correction on a queued prediction.
+app.post('/api/annotator/corrections', authenticateToken, requireAnnotatorOrAdmin, async (req, res) => {
+  const annotatorId = Number(req.user?.user_id);
+  const bodyQueueId = Number(req.body?.queue_id || 0);
+  const bodyPredictionId = Number(req.body?.prediction_id || 0);
+  const correctedLabel = String(req.body?.corrected_label || '').trim();
+  const notesRaw = String(req.body?.notes || req.body?.annotation_notes || '').trim();
+  const notes = notesRaw ? notesRaw.slice(0, 4000) : null;
+
+  if (!annotatorId) {
+    return res.status(401).json({ error: 'Invalid token payload' });
+  }
+  if (!bodyQueueId && !bodyPredictionId) {
+    return res.status(400).json({ error: 'queue_id or prediction_id is required' });
+  }
+  if (correctedLabel.length < 2 || correctedLabel.length > 120) {
+    return res.status(400).json({ error: 'corrected_label must be between 2 and 120 characters' });
+  }
+
+  try {
+    let queueRow = null;
+    let queueId = bodyQueueId || null;
+    let predictionId = bodyPredictionId || null;
+
+    if (queueId) {
+      const queueLookupResult = await pool.query(
+        `
+        SELECT queue_id, prediction_id, status
+        FROM retraining_queue
+        WHERE queue_id = $1
+        LIMIT 1
+        `,
+        [queueId]
+      );
+      queueRow = queueLookupResult.rows[0] || null;
+      if (!queueRow) {
+        return res.status(404).json({ error: 'Queue item not found' });
+      }
+      if (predictionId && predictionId !== Number(queueRow.prediction_id)) {
+        return res.status(400).json({ error: 'prediction_id does not match queue item' });
+      }
+      predictionId = Number(queueRow.prediction_id);
+    } else {
+      const pendingQueueLookupResult = await pool.query(
+        `
+        SELECT queue_id, prediction_id, status
+        FROM retraining_queue
+        WHERE prediction_id = $1
+        ORDER BY CASE WHEN status = 'PENDING' THEN 0 ELSE 1 END, created_at DESC
+        LIMIT 1
+        `,
+        [predictionId]
+      );
+      queueRow = pendingQueueLookupResult.rows[0] || null;
+      if (queueRow) {
+        queueId = Number(queueRow.queue_id);
+        predictionId = Number(queueRow.prediction_id);
+      }
+    }
+
+    if (!queueId || !predictionId) {
+      return res.status(404).json({ error: 'No retraining queue item found for this prediction' });
+    }
+
+    if (String(queueRow?.status || '').toUpperCase() !== 'PENDING') {
+      return res.status(400).json({ error: 'Queue item is not pending and cannot be corrected' });
+    }
+
+    const predictionExistsResult = await pool.query(
+      `
+      SELECT prediction_id
+      FROM prediction
+      WHERE prediction_id = $1
+      LIMIT 1
+      `,
+      [predictionId]
+    );
+    if (predictionExistsResult.rows.length === 0) {
+      return res.status(404).json({ error: 'Prediction not found' });
+    }
+
+    const upsertResult = await pool.query(
+      `
+      INSERT INTO annotator_correction
+        (queue_id, prediction_id, annotator_id, corrected_label, notes, status, created_at, updated_at)
+      VALUES
+        ($1, $2, $3, $4, $5, 'SUBMITTED', NOW(), NOW())
+      ON CONFLICT (prediction_id, annotator_id)
+      DO UPDATE
+      SET
+        queue_id = EXCLUDED.queue_id,
+        corrected_label = EXCLUDED.corrected_label,
+        notes = EXCLUDED.notes,
+        status = 'SUBMITTED',
+        updated_at = NOW()
+      RETURNING
+        correction_id,
+        queue_id,
+        prediction_id,
+        annotator_id,
+        corrected_label,
+        notes,
+        status,
+        created_at,
+        updated_at
+      `,
+      [queueId, predictionId, annotatorId, correctedLabel, notes]
+    );
+
+    await pool.query(
+      `
+      UPDATE retraining_queue
+      SET updated_at = NOW()
+      WHERE queue_id = $1
+      `,
+      [queueId]
+    );
+
+    return res.status(201).json({
+      success: true,
+      message: 'Correction submitted successfully',
+      correction: upsertResult.rows[0]
+    });
+  } catch (error) {
+    console.error('Submit annotator correction error:', error);
     return res.status(500).json({ error: 'Internal server error' });
   }
 });
@@ -1919,7 +2823,7 @@ app.post('/api/admin/users', authenticateToken, requireAdmin, async (req, res) =
   }
 
   if (!ALLOWED_ROLES.has(normalizedRole)) {
-    return res.status(400).json({ error: 'Invalid role. Use user or admin.' });
+    return res.status(400).json({ error: 'Invalid role. Use user, operator, annotator, or admin.' });
   }
 
   if (!ALLOWED_USER_STATUSES.has(statusValue)) {
@@ -2010,7 +2914,7 @@ app.patch('/api/admin/users/:userId', authenticateToken, requireAdmin, async (re
     if (typeof req.body?.role === 'string') {
       const normalizedRole = normalizeRoleName(req.body.role);
       if (!ALLOWED_ROLES.has(normalizedRole)) {
-        return res.status(400).json({ error: 'Invalid role. Use user or admin.' });
+        return res.status(400).json({ error: 'Invalid role. Use user, operator, annotator, or admin.' });
       }
 
       const roleId = await getRoleIdByName(normalizedRole);
@@ -2241,4 +3145,3 @@ app.post('/api/admin/reports/generate', authenticateToken, requireAdmin, async (
 app.listen(PORT, HOST, () => {
   console.log(`Server running on port ${PORT}`);
 });
-

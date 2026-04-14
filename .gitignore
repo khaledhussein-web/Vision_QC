@@ -16,3 +16,8 @@ backend/*.log
 backend/uploads/
 backend/reports/
 
+# Mobile app local/generated artifacts
+mobile/.expo/
+mobile/dist/
+mobile/.env.local
+

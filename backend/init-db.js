@@ -17,7 +17,7 @@ async function initDatabase() {
 
     // Insert roles
     await pool.query(`
-      INSERT INTO role (name) VALUES ('user'), ('admin'), ('operator')
+      INSERT INTO role (name) VALUES ('user'), ('admin'), ('operator'), ('annotator')
       ON CONFLICT (name) DO NOTHING
     `);
 
@@ -32,14 +32,23 @@ async function initDatabase() {
     // Insert users
     const hashedAdminPassword = await bcrypt.hash('admin123', 10);
     const hashedUserPassword = await bcrypt.hash('password123', 10);
+    const hashedAnnotatorPassword = await bcrypt.hash('annotator123', 10);
 
     await pool.query(`
       INSERT INTO users (full_name, email, password_hash, role_id, status)
       VALUES
         ('Admin User', 'admin@visionqc.com', $1, $2, 'ACTIVE'),
-        ('Test User', 'user@visionqc.com', $3, $4, 'ACTIVE')
+        ('Test User', 'user@visionqc.com', $3, $4, 'ACTIVE'),
+        ('Annotator User', 'annotator@visionqc.com', $5, $6, 'ACTIVE')
       ON CONFLICT (email) DO NOTHING
-    `, [hashedAdminPassword, roleMap.admin, hashedUserPassword, roleMap.user]);
+    `, [
+      hashedAdminPassword,
+      roleMap.admin,
+      hashedUserPassword,
+      roleMap.user,
+      hashedAnnotatorPassword,
+      roleMap.annotator
+    ]);
 
     console.log('Initial data inserted');
     console.log('Database initialized successfully');
