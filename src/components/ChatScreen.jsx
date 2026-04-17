@@ -1,7 +1,7 @@
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { getCurrentUserId, sendChatMessage } from '../utils/api';
 
-export default function ChatScreen({ navigate }) {
+export default function ChatScreen({ navigate, currentPrediction }) {
   const [input, setInput] = useState('');
   const [error, setError] = useState('');
   const [isSending, setIsSending] = useState(false);
@@ -9,6 +9,39 @@ export default function ChatScreen({ navigate }) {
   const [attachedFile, setAttachedFile] = useState(null);
   const [attachedPreview, setAttachedPreview] = useState('');
   const fileInputRef = useRef(null);
+  const predictionId = Number(currentPrediction?.prediction_id) || null;
+  const predictionImageId = Number(currentPrediction?.image_id) || null;
+  const predictionLabel = String(currentPrediction?.label || '').trim();
+  const predictionSuggestedSolution = String(currentPrediction?.suggested_sc || '').trim();
+  const predictionConfidence = Number(currentPrediction?.confidence);
+  const predictionConfidencePercent = Number.isFinite(predictionConfidence)
+    ? Math.round(predictionConfidence * 100)
+    : null;
+  const predictionCropHint = String(
+    currentPrediction?.crop || currentPrediction?.crop_hint || currentPrediction?.inferred_crop_hint || ''
+  ).trim();
+
+  useEffect(() => {
+    if (!predictionId) return;
+
+    const now = new Date();
+    const time = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    const confidenceLine = predictionConfidencePercent !== null ? `Confidence: ${predictionConfidencePercent}%` : 'Confidence: N/A';
+    const suggestionLine = predictionSuggestedSolution || 'No recommendation available.';
+    const labelLine = predictionLabel || 'Unknown condition';
+
+    setMessages((prev) => {
+      if (prev.length > 0) return prev;
+      return [
+        {
+          id: 1,
+          role: 'assistant',
+          text: `I already have your latest prediction.\nDisease: ${labelLine}\n${confidenceLine}\nRecommendation: ${suggestionLine}\n\nAsk me anything about treatment, prevention, or next steps.`,
+          time
+        }
+      ];
+    });
+  }, [predictionId, predictionLabel, predictionSuggestedSolution, predictionConfidencePercent]);
 
   const clearAttachment = () => {
     setAttachedFile(null);
@@ -78,7 +111,13 @@ export default function ChatScreen({ navigate }) {
         content: m.text,
       }));
       const userId = getCurrentUserId();
-      const response = await sendChatMessage(userId, trimmed, history, { imageFile: fileToSend });
+      const response = await sendChatMessage(userId, trimmed, history, {
+        imageFile: fileToSend,
+        predictionId: predictionId || undefined,
+        imageId: predictionImageId || undefined,
+        topic: predictionId ? 'prediction-follow-up' : 'general',
+        cropHint: predictionCropHint || undefined
+      });
       const replyText = String(response.reply || 'Sorry, I could not generate a response.');
       const imageAnalysisLabel = String(response?.image_analysis?.label || '').trim();
       const imageAnalysisConfidence = Number(response?.image_analysis?.confidence);
@@ -139,6 +178,18 @@ export default function ChatScreen({ navigate }) {
       </div>
 
       <div className="px-6 py-4">
+        {predictionId && (
+          <div className="mb-4 rounded-2xl border border-green-200 bg-green-50 p-4 text-sm text-green-900">
+            <p className="font-semibold">Prediction context loaded</p>
+            <p className="mt-1">
+              {predictionLabel || 'Unknown condition'}
+              {predictionConfidencePercent !== null ? ` (${predictionConfidencePercent}%)` : ''}
+            </p>
+            <p className="mt-1 text-green-800">
+              {predictionSuggestedSolution || 'No recommendation was returned for this prediction.'}
+            </p>
+          </div>
+        )}
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
           <div className="lg:col-span-8 space-y-4">
             <div className="bg-white border border-gray-200 rounded-2xl p-4 shadow-sm">
@@ -193,7 +244,9 @@ export default function ChatScreen({ navigate }) {
                     value={input}
                     onChange={(e) => setInput(e.target.value)}
                     rows={3}
-                    placeholder="Describe symptoms, plant type, or ask a question..."
+                    placeholder={predictionId
+                      ? 'Ask about this prediction: treatment plan, severity, or prevention...'
+                      : 'Describe symptoms, plant type, or ask a question...'}
                     className="mt-2 w-full rounded-xl border border-gray-200 px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-green-500"
                   />
                 </div>

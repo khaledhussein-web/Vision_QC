@@ -137,6 +137,22 @@ export async function forgotPassword(email) {
 }
 
 /**
+ * Validate Reset Token
+ * GET /api/auth/reset-password/validate?token=...
+ */
+export async function validateResetToken(token) {
+  const query = new URLSearchParams({
+    token: String(token || '').trim()
+  });
+
+  const response = await fetch(`${API_BASE_URL}/api/auth/reset-password/validate?${query.toString()}`, {
+    method: 'GET'
+  });
+
+  return parseResponse(response);
+}
+
+/**
  * Reset Password
  * POST /api/auth/reset-password
  */
@@ -280,13 +296,13 @@ export async function sendChatMessage(
 ) {
   const imageFile = options?.imageFile || null;
   const hasImage = typeof File !== 'undefined' && imageFile instanceof File;
+  const cropHint = String(options?.cropHint || '').trim();
   let response;
 
   if (hasImage) {
     const formData = new FormData();
     const trimmedMessage = String(message || '').trim();
     const safeHistory = Array.isArray(history) ? history : [];
-    const cropHint = String(options?.cropHint || '').trim();
 
     if (userId !== undefined && userId !== null) {
       formData.append('user_id', String(userId));
@@ -321,13 +337,35 @@ export async function sendChatMessage(
       body: formData
     });
   } else {
+    const payload = {
+      user_id: userId,
+      message,
+      history
+    };
+
+    if (options?.chatId) {
+      payload.chat_id = String(options.chatId);
+    }
+    if (options?.imageId) {
+      payload.image_id = String(options.imageId);
+    }
+    if (options?.predictionId) {
+      payload.prediction_id = String(options.predictionId);
+    }
+    if (options?.topic) {
+      payload.topic = String(options.topic);
+    }
+    if (cropHint) {
+      payload.crop_hint = cropHint;
+    }
+
     response = await fetch(`${API_BASE_URL}/api/chat`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         ...getAuthHeaders()
       },
-      body: JSON.stringify({ user_id: userId, message, history })
+      body: JSON.stringify(payload)
     });
   }
 

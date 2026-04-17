@@ -14,8 +14,10 @@ This is the backend server for the VisionQC application, connecting to a Postgre
    JWT_SECRET=your_secret_key
    ```
 
-   Optional password reset delivery via SMTP:
+   Optional password reset delivery via SMTP or Microsoft Graph OAuth2:
    ```
+   PASSWORD_RESET_DELIVERY_MODE=auto
+
    SMTP_HOST=smtp.yourprovider.com
    SMTP_PORT=587
    SMTP_SECURE=false
@@ -27,11 +29,21 @@ This is the backend server for the VisionQC application, connecting to a Postgre
    RESET_PASSWORD_URL=http://localhost:5173/reset-password
    PASSWORD_RESET_EXPIRY_MINUTES=30
    EXPOSE_RESET_TOKEN_IN_RESPONSE=true
+
+   GRAPH_TENANT_ID=your-entra-tenant-id
+   GRAPH_CLIENT_ID=your-app-client-id
+   GRAPH_CLIENT_SECRET=your-app-client-secret
+   GRAPH_SENDER_EMAIL=noreply@yourdomain.com
+   # Optional override:
+   # GRAPH_API_BASE_URL=https://graph.microsoft.com/v1.0
    ```
    Notes:
+   - `PASSWORD_RESET_DELIVERY_MODE` supports: `auto` (Graph then SMTP), `graph`, or `smtp`.
    - `RESET_PASSWORD_URL` is the frontend page users open from email.
    - `EXPOSE_RESET_TOKEN_IN_RESPONSE` should be `false` in production.
-   - If SMTP is not configured, forgot-password still returns a safe generic message and (in dev) exposes reset URL.
+   - If delivery is not configured, forgot-password still returns a safe generic message and (in dev) exposes reset URL.
+   - For Graph app-only sending, grant application permission `Mail.Send` and admin-consent it in Microsoft Entra.
+   - Personal Outlook/Hotmail consumer mailboxes often cannot use app-only Graph sending; Microsoft 365 work/school mailboxes are recommended.
 
    Optional prediction-quality tuning (FastAPI service):
    ```

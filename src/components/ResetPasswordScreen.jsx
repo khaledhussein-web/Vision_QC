@@ -1,27 +1,67 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { ArrowLeft, KeyRound, Loader2, Lock } from 'lucide-react';
 import { Button } from './ui/button';
 import { Input } from './ui/input';
 import { Label } from './ui/label';
-import { resetPassword } from '../utils/api';
+import { resetPassword, validateResetToken } from '../utils/api';
 
 export default function ResetPasswordScreen({ initialToken = '', onBack }) {
   const [token, setToken] = useState(String(initialToken || '').trim());
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
   const [loading, setLoading] = useState(false);
+  const [validatingToken, setValidatingToken] = useState(false);
+  const [tokenValidationError, setTokenValidationError] = useState('');
   const [error, setError] = useState('');
   const [successMessage, setSuccessMessage] = useState('');
 
   const hasToken = useMemo(() => String(token || '').trim().length > 0, [token]);
+
+  useEffect(() => {
+    setToken(String(initialToken || '').trim());
+  }, [initialToken]);
+
+  useEffect(() => {
+    const urlToken = String(initialToken || '').trim();
+    if (!urlToken) {
+      setTokenValidationError('');
+      setValidatingToken(false);
+      return;
+    }
+
+    let active = true;
+    setValidatingToken(true);
+    setTokenValidationError('');
+
+    validateResetToken(urlToken)
+      .catch((apiError) => {
+        if (!active) return;
+        setTokenValidationError(apiError?.error || 'Invalid or expired reset token.');
+      })
+      .finally(() => {
+        if (active) {
+          setValidatingToken(false);
+        }
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [initialToken]);
 
   const handleSubmit = async (event) => {
     event.preventDefault();
     setError('');
     setSuccessMessage('');
 
-    if (!hasToken) {
+    const trimmedToken = String(token || '').trim();
+    if (!trimmedToken) {
       setError('Reset token is required.');
+      return;
+    }
+
+    if (password.length < 8) {
+      setError('Password must be at least 8 characters.');
       return;
     }
 
@@ -32,7 +72,8 @@ export default function ResetPasswordScreen({ initialToken = '', onBack }) {
 
     setLoading(true);
     try {
-      const response = await resetPassword(token, password, confirmPassword);
+      await validateResetToken(trimmedToken);
+      const response = await resetPassword(trimmedToken, password, confirmPassword);
       setSuccessMessage(
         response?.message || 'Password reset successful. You can now sign in with your new password.'
       );
@@ -66,6 +107,18 @@ export default function ResetPasswordScreen({ initialToken = '', onBack }) {
           </div>
         )}
 
+        {tokenValidationError && (
+          <div className="mb-4 p-3 bg-red-50 border border-red-200 rounded-lg text-red-700 text-center">
+            {tokenValidationError}
+          </div>
+        )}
+
+        {validatingToken && (
+          <div className="mb-4 p-3 bg-blue-50 border border-blue-200 rounded-lg text-blue-700 text-center">
+            Validating reset token...
+          </div>
+        )}
+
         {successMessage && (
           <div className="mb-4 p-3 bg-green-50 border border-green-200 rounded-lg text-green-700 text-center">
             {successMessage}
@@ -82,7 +135,10 @@ export default function ResetPasswordScreen({ initialToken = '', onBack }) {
                 type="text"
                 placeholder="Paste reset token"
                 value={token}
-                onChange={(event) => setToken(event.target.value)}
+                onChange={(event) => {
+                  setToken(event.target.value);
+                  setTokenValidationError('');
+                }}
                 className="pl-10"
                 required
                 disabled={loading}
@@ -124,7 +180,7 @@ export default function ResetPasswordScreen({ initialToken = '', onBack }) {
             </div>
           </div>
 
-          <Button type="submit" className="w-full bg-green-600 hover:bg-green-700" disabled={loading}>
+          <Button type="submit" className="w-full bg-green-600 hover:bg-green-700" disabled={loading || validatingToken || !hasToken}>
             {loading ? (
               <>
                 <Loader2 className="w-4 h-4 mr-2 animate-spin" />

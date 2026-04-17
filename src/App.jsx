@@ -286,7 +286,7 @@ export default function App() {
       case 'result':
         return <ResultScreen navigate={navigate} selectedImage={selectedImage} currentPrediction={currentPrediction} currentUser={{ id: userId, name: userName, email: userEmail }} />;
       case 'chat':
-        return <ChatScreen navigate={navigate} />;
+        return <ChatScreen navigate={navigate} currentPrediction={currentPrediction} />;
       case 'history':
         return <HistoryScreen navigate={navigate} userId={userId} />;
       case 'bookmarks':

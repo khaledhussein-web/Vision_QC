@@ -1,4 +1,4 @@
-import { ArrowLeft, AlertTriangle, CheckCircle2, Flag, Loader2 } from 'lucide-react';
+import { ArrowLeft, AlertTriangle, CheckCircle2, Flag, Loader2, MessageSquare } from 'lucide-react';
 import { useState } from 'react';
 import { Button } from './ui/button';
 import { ImageWithFallback } from './figma/ImageWithFallback';
@@ -223,6 +223,15 @@ export default function ResultScreen({ navigate, selectedImage, currentPredictio
             </div>
           )}
         </div>
+
+        <Button
+          onClick={() => navigate('chat')}
+          variant="outline"
+          className="w-full border-green-200 text-green-700 hover:bg-green-50 py-6"
+        >
+          <MessageSquare className="w-5 h-5 mr-2" />
+          Ask AI About This Result
+        </Button>
 
         <Button
           onClick={() => navigate('upload', { replace: true })}
