@@ -69,7 +69,7 @@ export default function ProfileScreen({ navigate, userId, userEmail }) {
         <div className="bg-white rounded-2xl p-6 shadow-md space-y-4">
           <h3 className="text-gray-900">Quick Actions</h3>
           <div className="flex flex-col sm:flex-row gap-3">
-            <Button variant="outline" onClick={() => navigate('forgot-password')}>
+            <Button variant="outline" onClick={() => navigate('forgot-password', { email: userEmail })}>
               Reset Password
             </Button>
             <Button variant="outline" onClick={() => navigate('history')}>

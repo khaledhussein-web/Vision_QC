@@ -57,7 +57,7 @@ export default function LoginScreen({ navigation }) {
             <Pressable onPress={() => navigation.navigate('Register')}>
               <Text style={styles.link}>Create account</Text>
             </Pressable>
-            <Pressable onPress={() => navigation.navigate('ForgotPassword')}>
+            <Pressable onPress={() => navigation.navigate('ForgotPassword', { email: String(email || '').trim() })}>
               <Text style={styles.link}>Forgot password?</Text>
             </Pressable>
           </View>

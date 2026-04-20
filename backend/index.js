@@ -36,11 +36,39 @@ const SMTP_PORT = Math.max(Number(process.env.SMTP_PORT) || 587, 1);
 const SMTP_SECURE = ['1', 'true', 'yes', 'on'].includes(
   String(process.env.SMTP_SECURE || '').trim().toLowerCase()
 );
+const SMTP_CONNECTION_TIMEOUT_MS = Math.min(
+  Math.max(Number(process.env.SMTP_CONNECTION_TIMEOUT_MS) || 15000, 1000),
+  300000
+);
+const SMTP_GREETING_TIMEOUT_MS = Math.min(
+  Math.max(Number(process.env.SMTP_GREETING_TIMEOUT_MS) || 15000, 1000),
+  300000
+);
+const SMTP_SOCKET_TIMEOUT_MS = Math.min(
+  Math.max(Number(process.env.SMTP_SOCKET_TIMEOUT_MS) || 20000, 1000),
+  300000
+);
+const SMTP_DNS_TIMEOUT_MS = Math.min(
+  Math.max(Number(process.env.SMTP_DNS_TIMEOUT_MS) || 2000, 1000),
+  300000
+);
+const SMTP_SEND_TIMEOUT_MS = Math.min(
+  Math.max(Number(process.env.SMTP_SEND_TIMEOUT_MS) || 15000, 1000),
+  300000
+);
 const SMTP_USER = String(process.env.SMTP_USER || '').trim();
 const SMTP_PASS = String(process.env.SMTP_PASS || '').trim();
 const SMTP_FROM_NAME = String(process.env.SMTP_FROM_NAME || 'VisionQC').trim();
 const SMTP_FROM_EMAIL = String(process.env.SMTP_FROM_EMAIL || '').trim();
 const SMTP_SUBJECT = String(process.env.SMTP_SUBJECT || 'VisionQC Password Reset').trim();
+const RESEND_API_KEY = String(process.env.RESEND_API_KEY || '').trim();
+const RESEND_FROM_EMAIL = String(process.env.RESEND_FROM_EMAIL || '').trim().toLowerCase();
+const RESEND_FROM_NAME = String(process.env.RESEND_FROM_NAME || SMTP_FROM_NAME || 'VisionQC').trim();
+const RESEND_API_BASE_URL = String(process.env.RESEND_API_BASE_URL || 'https://api.resend.com').trim().replace(/\/$/, '');
+const RESEND_SEND_TIMEOUT_MS = Math.min(
+  Math.max(Number(process.env.RESEND_SEND_TIMEOUT_MS) || 15000, 1000),
+  300000
+);
 const GRAPH_TENANT_ID = String(process.env.GRAPH_TENANT_ID || '').trim();
 const GRAPH_CLIENT_ID = String(process.env.GRAPH_CLIENT_ID || '').trim();
 const GRAPH_CLIENT_SECRET = String(process.env.GRAPH_CLIENT_SECRET || '').trim();
@@ -886,17 +914,32 @@ const issuePasswordResetToken = async (userId) => {
   };
 };
 
-const buildPasswordResetUrl = (tokenValue) => {
+const buildPasswordResetUrl = (tokenValue, frontendOrigin = '') => {
   const safeToken = String(tokenValue || '').trim();
-  if (!safeToken) return RESET_PASSWORD_URL;
+
+  const frontendOriginValue = String(frontendOrigin || '').trim();
+  let resetBaseUrl = RESET_PASSWORD_URL;
+  if (frontendOriginValue) {
+    try {
+      const originUrl = new URL(frontendOriginValue);
+      originUrl.pathname = '/reset-password';
+      originUrl.search = '';
+      originUrl.hash = '';
+      resetBaseUrl = originUrl.toString();
+    } catch (_error) {
+      // Ignore invalid origin header and fallback to configured RESET_PASSWORD_URL.
+    }
+  }
+
+  if (!safeToken) return resetBaseUrl;
 
   try {
-    const url = new URL(RESET_PASSWORD_URL);
+    const url = new URL(resetBaseUrl);
     url.searchParams.set('token', safeToken);
     return url.toString();
   } catch (_error) {
-    const separator = RESET_PASSWORD_URL.includes('?') ? '&' : '?';
-    return `${RESET_PASSWORD_URL}${separator}token=${encodeURIComponent(safeToken)}`;
+    const separator = resetBaseUrl.includes('?') ? '&' : '?';
+    return `${resetBaseUrl}${separator}token=${encodeURIComponent(safeToken)}`;
   }
 };
 
@@ -937,13 +980,35 @@ const buildPasswordResetEmailPayload = ({ resetUrl, expiresAt, fullName = '' }) 
   };
 };
 
+const withPromiseTimeout = (promise, timeoutMs, timeoutLabel) =>
+  new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      reject(new Error(`${timeoutLabel} timed out after ${timeoutMs}ms`));
+    }, timeoutMs);
+
+    promise
+      .then((value) => {
+        clearTimeout(timer);
+        resolve(value);
+      })
+      .catch((error) => {
+        clearTimeout(timer);
+        reject(error);
+      });
+  });
+
 const getSmtpTransporter = () => {
   if (smtpTransporter) {
     return smtpTransporter;
   }
 
   if (SMTP_URL) {
-    smtpTransporter = nodemailer.createTransport(SMTP_URL);
+    smtpTransporter = nodemailer.createTransport(SMTP_URL, {
+      connectionTimeout: SMTP_CONNECTION_TIMEOUT_MS,
+      greetingTimeout: SMTP_GREETING_TIMEOUT_MS,
+      socketTimeout: SMTP_SOCKET_TIMEOUT_MS,
+      dnsTimeout: SMTP_DNS_TIMEOUT_MS
+    });
     return smtpTransporter;
   }
 
@@ -955,6 +1020,10 @@ const getSmtpTransporter = () => {
     host: SMTP_HOST,
     port: SMTP_PORT,
     secure: SMTP_SECURE,
+    connectionTimeout: SMTP_CONNECTION_TIMEOUT_MS,
+    greetingTimeout: SMTP_GREETING_TIMEOUT_MS,
+    socketTimeout: SMTP_SOCKET_TIMEOUT_MS,
+    dnsTimeout: SMTP_DNS_TIMEOUT_MS,
     auth: {
       user: SMTP_USER,
       pass: SMTP_PASS
@@ -988,13 +1057,17 @@ const sendPasswordResetEmailViaSmtp = async ({ email, resetUrl, expiresAt, fullN
   });
 
   try {
-    const result = await transporter.sendMail({
-      from: `"${SMTP_FROM_NAME}" <${SMTP_FROM_EMAIL}>`,
-      to: recipientEmail,
-      subject,
-      text: textBody,
-      html: htmlBody
-    });
+    const result = await withPromiseTimeout(
+      transporter.sendMail({
+        from: `"${SMTP_FROM_NAME}" <${SMTP_FROM_EMAIL}>`,
+        to: recipientEmail,
+        subject,
+        text: textBody,
+        html: htmlBody
+      }),
+      SMTP_SEND_TIMEOUT_MS,
+      'SMTP send'
+    );
     if (result?.messageId) {
       return {
         sent: true
@@ -1007,10 +1080,12 @@ const sendPasswordResetEmailViaSmtp = async ({ email, resetUrl, expiresAt, fullN
       provider_message: 'SMTP provider did not return a message id'
     };
   } catch (error) {
+    const errorMessage = String(error?.message || 'Failed to send SMTP email');
+    const isTimeout = /timed out/i.test(errorMessage);
     return {
       sent: false,
-      reason: 'smtp_send_failed',
-      provider_message: error?.message || 'Failed to send SMTP email'
+      reason: isTimeout ? 'smtp_send_timeout' : 'smtp_send_failed',
+      provider_message: errorMessage
     };
   }
 };
@@ -1187,9 +1262,98 @@ const sendPasswordResetEmailViaGraph = async ({ email, resetUrl, expiresAt, full
   }
 };
 
+const isResendConfigured = () => Boolean(RESEND_API_KEY && RESEND_FROM_EMAIL);
+
+const sendPasswordResetEmailViaResend = async ({ email, resetUrl, expiresAt, fullName = '' }) => {
+  if (!isResendConfigured()) {
+    return {
+      sent: false,
+      reason: 'resend_not_configured'
+    };
+  }
+
+  const recipientEmail = String(email || '').trim().toLowerCase();
+  const { subject, textBody, htmlBody } = buildPasswordResetEmailPayload({
+    resetUrl,
+    expiresAt,
+    fullName
+  });
+  const fromValue = `"${RESEND_FROM_NAME}" <${RESEND_FROM_EMAIL}>`;
+  const resendEndpoint = `${RESEND_API_BASE_URL}/emails`;
+
+  try {
+    const resendResponse = await withPromiseTimeout(
+      fetch(resendEndpoint, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${RESEND_API_KEY}`,
+          'Content-Type': 'application/json',
+          'User-Agent': 'VisionQC/1.0'
+        },
+        body: JSON.stringify({
+          from: fromValue,
+          to: [recipientEmail],
+          subject,
+          html: htmlBody,
+          text: textBody
+        })
+      }),
+      RESEND_SEND_TIMEOUT_MS,
+      'Resend send'
+    );
+
+    const rawBody = await resendResponse.text().catch(() => '');
+    let parsedBody = {};
+    try {
+      parsedBody = rawBody ? JSON.parse(rawBody) : {};
+    } catch (_error) {
+      parsedBody = {};
+    }
+
+    if (!resendResponse.ok) {
+      return {
+        sent: false,
+        reason: 'resend_send_failed',
+        provider_status: resendResponse.status,
+        provider_message:
+          parsedBody?.message ||
+          parsedBody?.error ||
+          resendResponse.statusText ||
+          rawBody ||
+          'Resend send request failed'
+      };
+    }
+
+    if (!parsedBody?.id) {
+      return {
+        sent: false,
+        reason: 'resend_rejected',
+        provider_status: resendResponse.status,
+        provider_message: 'Resend did not return a message id'
+      };
+    }
+
+    return {
+      sent: true
+    };
+  } catch (error) {
+    const errorMessage = String(error?.message || 'Resend send failed');
+    const isTimeout = /timed out/i.test(errorMessage);
+    return {
+      sent: false,
+      reason: isTimeout ? 'resend_send_timeout' : 'resend_send_failed',
+      provider_message: errorMessage
+    };
+  }
+};
+
 const sendPasswordResetEmail = async ({ email, resetUrl, expiresAt, fullName = '' }) => {
   const payload = { email, resetUrl, expiresAt, fullName };
   const mode = PASSWORD_RESET_DELIVERY_MODE;
+
+  if (mode === 'resend') {
+    return sendPasswordResetEmailViaResend(payload);
+  }
 
   if (mode === 'graph') {
     return sendPasswordResetEmailViaGraph(payload);
@@ -1199,7 +1363,15 @@ const sendPasswordResetEmail = async ({ email, resetUrl, expiresAt, fullName = '
     return sendPasswordResetEmailViaSmtp(payload);
   }
 
-  // auto mode: try Graph first, then fallback to SMTP
+  // auto mode: try Resend first, then Graph, then fallback to SMTP
+  const resendDelivery = await sendPasswordResetEmailViaResend(payload);
+  if (resendDelivery.sent) {
+    return {
+      ...resendDelivery,
+      provider: 'resend'
+    };
+  }
+
   const graphDelivery = await sendPasswordResetEmailViaGraph(payload);
   if (graphDelivery.sent) {
     return {
@@ -1218,9 +1390,16 @@ const sendPasswordResetEmail = async ({ email, resetUrl, expiresAt, fullName = '
 
   return {
     sent: false,
-    reason: smtpDelivery.reason || graphDelivery.reason || 'delivery_failed',
-    provider_message: smtpDelivery.provider_message || graphDelivery.provider_message,
-    provider_status: smtpDelivery.provider_status || graphDelivery.provider_status,
+    reason: smtpDelivery.reason || graphDelivery.reason || resendDelivery.reason || 'delivery_failed',
+    provider_message:
+      smtpDelivery.provider_message ||
+      graphDelivery.provider_message ||
+      resendDelivery.provider_message,
+    provider_status:
+      smtpDelivery.provider_status ||
+      graphDelivery.provider_status ||
+      resendDelivery.provider_status,
+    resend_reason: resendDelivery.reason,
     graph_reason: graphDelivery.reason,
     smtp_reason: smtpDelivery.reason
   };
@@ -1351,7 +1530,18 @@ app.post('/api/auth/forgot-password', async (req, res) => {
     const userId = Number(userResult.rows[0].user_id);
     const fullName = String(userResult.rows[0].full_name || '').trim();
     const resetTokenRow = await issuePasswordResetToken(userId);
-    const resetUrl = buildPasswordResetUrl(resetTokenRow.token);
+    const requestOrigin = String(req.get('origin') || '').trim();
+    const requestReferer = String(req.get('referer') || '').trim();
+    let frontendOrigin = requestOrigin;
+    if (!frontendOrigin && requestReferer) {
+      try {
+        frontendOrigin = new URL(requestReferer).origin;
+      } catch (_error) {
+        frontendOrigin = '';
+      }
+    }
+
+    const resetUrl = buildPasswordResetUrl(resetTokenRow.token, frontendOrigin);
     const delivery = await sendPasswordResetEmail({
       email: normalizedEmail,
       resetUrl,
@@ -1374,7 +1564,10 @@ app.post('/api/auth/forgot-password', async (req, res) => {
         reset_token: resetTokenRow.token,
         reset_url: resetUrl,
         expires_at: resetTokenRow.expires_at,
-        email_delivery: delivery.sent ? 'sent' : 'not_sent'
+        email_delivery: delivery.sent ? 'sent' : 'not_sent',
+        email_provider: delivery.provider || null,
+        email_reason: delivery.sent ? null : delivery.reason || null,
+        email_error: delivery.sent ? null : delivery.provider_message || null
       });
     }
 

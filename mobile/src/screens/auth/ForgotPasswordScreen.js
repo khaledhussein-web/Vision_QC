@@ -1,14 +1,18 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { Alert, StyleSheet, Text, TextInput, View } from 'react-native';
 import ScreenContainer from '../../components/ScreenContainer';
 import PrimaryButton from '../../components/PrimaryButton';
 import { forgotPasswordApi } from '../../api/client';
 
-export default function ForgotPasswordScreen({ navigation }) {
-  const [email, setEmail] = useState('');
+export default function ForgotPasswordScreen({ navigation, route }) {
+  const [email, setEmail] = useState(String(route?.params?.email || '').trim());
   const [loading, setLoading] = useState(false);
   const [feedback, setFeedback] = useState('');
   const [resetToken, setResetToken] = useState('');
+
+  useEffect(() => {
+    setEmail(String(route?.params?.email || '').trim());
+  }, [route?.params?.email]);
 
   const handleSend = async () => {
     if (!email.trim()) {

@@ -88,7 +88,12 @@ export default function LoginScreen({ onLogin, onRegister, onForgotPassword, onV
           </div>
 
           <div className="flex justify-end">
-            <button type="button" className="text-green-600 hover:text-green-700" onClick={onForgotPassword} disabled={loading}>
+            <button
+              type="button"
+              className="text-green-600 hover:text-green-700"
+              onClick={() => onForgotPassword(String(email || '').trim())}
+              disabled={loading}
+            >
               Forgot Password?
             </button>
           </div>

@@ -1,22 +1,28 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { ArrowLeft, Loader2, Mail } from 'lucide-react';
 import { Button } from './ui/button';
 import { Input } from './ui/input';
 import { Label } from './ui/label';
 import { forgotPassword } from '../utils/api';
 
-export default function ForgotPasswordScreen({ onBack }) {
-  const [email, setEmail] = useState('');
+export default function ForgotPasswordScreen({ initialEmail = '', onBack }) {
+  const [email, setEmail] = useState(String(initialEmail || '').trim());
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [successMessage, setSuccessMessage] = useState('');
   const [resetUrl, setResetUrl] = useState('');
+  const [deliveryWarning, setDeliveryWarning] = useState('');
+
+  useEffect(() => {
+    setEmail(String(initialEmail || '').trim());
+  }, [initialEmail]);
 
   const handleSubmit = async (event) => {
     event.preventDefault();
     setError('');
     setSuccessMessage('');
     setResetUrl('');
+    setDeliveryWarning('');
     setLoading(true);
 
     try {
@@ -26,6 +32,15 @@ export default function ForgotPasswordScreen({ onBack }) {
       );
       if (response?.reset_url) {
         setResetUrl(String(response.reset_url));
+      }
+      if (response?.email_delivery === 'not_sent') {
+        const reason = String(response?.email_reason || 'delivery_failed').trim();
+        const providerError = String(response?.email_error || '').trim();
+        setDeliveryWarning(
+          providerError
+            ? `Email delivery failed (${reason}): ${providerError}`
+            : `Email delivery failed (${reason}).`
+        );
       }
     } catch (apiError) {
       setError(apiError?.error || 'Failed to send reset request. Please try again.');
@@ -60,6 +75,12 @@ export default function ForgotPasswordScreen({ onBack }) {
         {successMessage && (
           <div className="mb-4 p-3 bg-green-50 border border-green-200 rounded-lg text-green-700 text-center">
             {successMessage}
+          </div>
+        )}
+
+        {deliveryWarning && (
+          <div className="mb-4 p-3 bg-amber-50 border border-amber-200 rounded-lg text-amber-800 text-sm">
+            {deliveryWarning}
           </div>
         )}
 

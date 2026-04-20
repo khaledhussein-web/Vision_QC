@@ -125,13 +125,24 @@ export async function register(
  * POST /api/auth/forgot-password
  */
 export async function forgotPassword(email) {
-  const response = await fetch(`${API_BASE_URL}/api/auth/forgot-password`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json'
-    },
-    body: JSON.stringify({ email })
-  });
+  let response;
+  try {
+    response = await fetch(`${API_BASE_URL}/api/auth/forgot-password`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({ email })
+    });
+  } catch (_error) {
+    const baseUrlHint = API_BASE_URL || 'http://localhost:5000';
+    throw {
+      status: 0,
+      error: 'Backend unreachable',
+      detail: `Could not connect to ${baseUrlHint}/api/auth/forgot-password`,
+      hint: 'Ensure backend is running and reachable from this device.'
+    };
+  }
 
   return parseResponse(response);
 }
@@ -145,9 +156,20 @@ export async function validateResetToken(token) {
     token: String(token || '').trim()
   });
 
-  const response = await fetch(`${API_BASE_URL}/api/auth/reset-password/validate?${query.toString()}`, {
-    method: 'GET'
-  });
+  let response;
+  try {
+    response = await fetch(`${API_BASE_URL}/api/auth/reset-password/validate?${query.toString()}`, {
+      method: 'GET'
+    });
+  } catch (_error) {
+    const baseUrlHint = API_BASE_URL || 'http://localhost:5000';
+    throw {
+      status: 0,
+      error: 'Backend unreachable',
+      detail: `Could not connect to ${baseUrlHint}/api/auth/reset-password/validate`,
+      hint: 'Ensure backend is running and reachable from this device.'
+    };
+  }
 
   return parseResponse(response);
 }
@@ -161,13 +183,24 @@ export async function resetPassword(
   password,
   password_confirmation
 ) {
-  const response = await fetch(`${API_BASE_URL}/api/auth/reset-password`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json'
-    },
-    body: JSON.stringify({ token, password, password_confirmation })
-  });
+  let response;
+  try {
+    response = await fetch(`${API_BASE_URL}/api/auth/reset-password`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({ token, password, password_confirmation })
+    });
+  } catch (_error) {
+    const baseUrlHint = API_BASE_URL || 'http://localhost:5000';
+    throw {
+      status: 0,
+      error: 'Backend unreachable',
+      detail: `Could not connect to ${baseUrlHint}/api/auth/reset-password`,
+      hint: 'Ensure backend is running and reachable from this device.'
+    };
+  }
 
   return parseResponse(response);
 }

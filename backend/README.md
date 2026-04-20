@@ -14,13 +14,25 @@ This is the backend server for the VisionQC application, connecting to a Postgre
    JWT_SECRET=your_secret_key
    ```
 
-   Optional password reset delivery via SMTP or Microsoft Graph OAuth2:
+   Optional password reset delivery via Resend, SMTP, or Microsoft Graph OAuth2:
    ```
    PASSWORD_RESET_DELIVERY_MODE=auto
+
+   RESEND_API_KEY=re_xxxxxxxxx
+   RESEND_FROM_EMAIL=noreply@yourdomain.com
+   RESEND_FROM_NAME=VisionQC
+   RESEND_SEND_TIMEOUT_MS=15000
+   # Optional override:
+   # RESEND_API_BASE_URL=https://api.resend.com
 
    SMTP_HOST=smtp.yourprovider.com
    SMTP_PORT=587
    SMTP_SECURE=false
+   SMTP_CONNECTION_TIMEOUT_MS=15000
+   SMTP_GREETING_TIMEOUT_MS=15000
+   SMTP_SOCKET_TIMEOUT_MS=20000
+   SMTP_DNS_TIMEOUT_MS=2000
+   SMTP_SEND_TIMEOUT_MS=15000
    SMTP_USER=your_smtp_username
    SMTP_PASS=your_smtp_password
    SMTP_FROM_NAME=VisionQC
@@ -38,7 +50,9 @@ This is the backend server for the VisionQC application, connecting to a Postgre
    # GRAPH_API_BASE_URL=https://graph.microsoft.com/v1.0
    ```
    Notes:
-   - `PASSWORD_RESET_DELIVERY_MODE` supports: `auto` (Graph then SMTP), `graph`, or `smtp`.
+   - `PASSWORD_RESET_DELIVERY_MODE` supports: `auto` (Resend then Graph then SMTP), `resend`, `graph`, or `smtp`.
+   - Resend mode requires a verified sender domain/address in your Resend account.
+   - If outbound SMTP ports are blocked by firewall/network policy, SMTP delivery will fail (timeouts). In that case use Graph mode or allow outbound SMTP.
    - `RESET_PASSWORD_URL` is the frontend page users open from email.
    - `EXPOSE_RESET_TOKEN_IN_RESPONSE` should be `false` in production.
    - If delivery is not configured, forgot-password still returns a safe generic message and (in dev) exposes reset URL.

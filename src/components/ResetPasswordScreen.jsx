@@ -15,6 +15,14 @@ export default function ResetPasswordScreen({ initialToken = '', onBack }) {
   const [error, setError] = useState('');
   const [successMessage, setSuccessMessage] = useState('');
 
+  const mapResetErrorMessage = (apiError) => {
+    const message = String(apiError?.error || '').trim();
+    if (message.toLowerCase() === 'invalid or expired reset token') {
+      return 'Invalid or expired reset token. Request a new reset link and use only the latest email.';
+    }
+    return message || 'Failed to reset password. Please try again.';
+  };
+
   const hasToken = useMemo(() => String(token || '').trim().length > 0, [token]);
 
   useEffect(() => {
@@ -36,7 +44,7 @@ export default function ResetPasswordScreen({ initialToken = '', onBack }) {
     validateResetToken(urlToken)
       .catch((apiError) => {
         if (!active) return;
-        setTokenValidationError(apiError?.error || 'Invalid or expired reset token.');
+        setTokenValidationError(mapResetErrorMessage(apiError));
       })
       .finally(() => {
         if (active) {
@@ -80,7 +88,7 @@ export default function ResetPasswordScreen({ initialToken = '', onBack }) {
       setPassword('');
       setConfirmPassword('');
     } catch (apiError) {
-      setError(apiError?.error || 'Failed to reset password. Please try again.');
+      setError(mapResetErrorMessage(apiError));
     } finally {
       setLoading(false);
     }

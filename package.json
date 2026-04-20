@@ -54,7 +54,9 @@
   },
   "scripts": {
     "dev": "vite",
+    "dev:lan": "vite --host 0.0.0.0 --port 5173",
     "dev:all": "concurrently \"vite\" \"cd backend && npm start\" \".\\\\.venv\\\\Scripts\\\\python.exe -m uvicorn backend.fastapi_service:app --host 127.0.0.1 --port 8000 --reload\"",
+    "dev:all:lan": "concurrently \"vite --host 0.0.0.0 --port 5173\" \"cd backend && npm start\" \".\\\\.venv\\\\Scripts\\\\python.exe -m uvicorn backend.fastapi_service:app --host 127.0.0.1 --port 8000 --reload\"",
     "build": "vite build",
     "py:venv": "py -3.11 -m venv .venv",
     "py:install": ".\\.venv\\Scripts\\python.exe -m pip install -r backend\\requirements.txt",

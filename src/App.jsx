@@ -48,6 +48,7 @@ export default function App() {
   const [userEmail, setUserEmail] = useState('');
   const [userName, setUserName] = useState('');
   const [resetToken, setResetToken] = useState(getResetTokenFromLocation);
+  const [forgotPasswordEmail, setForgotPasswordEmail] = useState('');
 
   useEffect(() => {
     if (typeof window === 'undefined') return undefined;
@@ -106,9 +107,16 @@ export default function App() {
       const nextToken = String(options?.token || resetToken || '').trim();
       setResetToken(nextToken);
       updateAddressBar('reset-password', nextToken);
+    } else if (targetScreen === 'forgot-password') {
+      const nextEmail = String(options?.email || userEmail || '').trim();
+      setForgotPasswordEmail(nextEmail);
+      updateAddressBar('forgot-password');
     } else {
       if (resetToken) {
         setResetToken('');
+      }
+      if (forgotPasswordEmail) {
+        setForgotPasswordEmail('');
       }
       updateAddressBar(targetScreen);
     }
@@ -264,13 +272,13 @@ export default function App() {
         return <LoginScreen 
           onLogin={handleLogin} 
           onRegister={() => navigate('register')} 
-          onForgotPassword={() => navigate('forgot-password')} 
+          onForgotPassword={(email) => navigate('forgot-password', { email })} 
           onViewDocs={() => navigate('api-docs')}
         />; 
       case 'register':
         return <RegisterScreen onRegister={() => navigate('login')} onBack={() => navigate('login')} />;
       case 'forgot-password':
-        return <ForgotPasswordScreen onBack={() => navigate('login')} />;
+        return <ForgotPasswordScreen initialEmail={forgotPasswordEmail} onBack={() => navigate('login')} />;
       case 'reset-password':
         return <ResetPasswordScreen initialToken={resetToken} onBack={() => navigate('login')} />;
       case 'home':
