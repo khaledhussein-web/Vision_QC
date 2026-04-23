@@ -1,14 +1,19 @@
 import { useEffect, useMemo, useState } from 'react';
 import {
   Activity,
+  AlertTriangle,
+  BarChart3,
   BrainCircuit,
+  Database,
   FileText,
   Images,
   Loader2,
   ShieldCheck,
+  UploadCloud,
   Users
 } from 'lucide-react';
 import {
+  getAdminDatasetMetrics,
   getAdminImages,
   getAdminReports,
   getAdminUsers,
@@ -29,6 +34,12 @@ const formatConfidence = (confidence) => {
   const numeric = Number(confidence);
   if (Number.isNaN(numeric)) return '-';
   return `${Math.round(numeric * 100)}%`;
+};
+
+const formatInteger = (value) => {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return '0';
+  return new Intl.NumberFormat('en-US').format(Math.round(numeric));
 };
 
 const EmptyState = ({ message }) => (
@@ -111,6 +122,11 @@ export default function AdminDashboard({ navigate }) {
   });
 
   const [pendingRetraining, setPendingRetraining] = useState(null);
+  const [datasetState, setDatasetState] = useState({
+    loading: false,
+    error: '',
+    metrics: null
+  });
 
   const tabs = useMemo(
     () => [
@@ -202,15 +218,75 @@ export default function AdminDashboard({ navigate }) {
       }
     };
 
+    const loadDatasetMetrics = async () => {
+      setDatasetState((prev) => ({ ...prev, loading: true, error: '' }));
+      try {
+        const response = await getAdminDatasetMetrics();
+        if (!isMounted) return;
+        setDatasetState({
+          loading: false,
+          error: '',
+          metrics: response
+        });
+      } catch (error) {
+        if (!isMounted) return;
+        setDatasetState((prev) => ({
+          ...prev,
+          loading: false,
+          error: error?.detail || error?.error || 'Unable to load dataset metrics.'
+        }));
+      }
+    };
+
     if (activeTab === 'users') loadUsers();
     if (activeTab === 'images') loadImages();
     if (activeTab === 'reports') loadReports();
     loadPending();
+    loadDatasetMetrics();
 
     return () => {
       isMounted = false;
     };
   }, [activeTab, usersState.page, imagesState.page, reportsState.page]);
+
+  const datasetSize = datasetState.metrics?.dataset_size || {};
+  const annotationProgress = datasetState.metrics?.annotation_progress || {};
+  const classDistribution = Array.isArray(datasetState.metrics?.class_distribution)
+    ? datasetState.metrics.class_distribution
+    : [];
+  const classImbalance = datasetState.metrics?.class_imbalance || null;
+
+  const imbalanceTone = (() => {
+    const status = String(classImbalance?.status || '').toLowerCase();
+    if (status === 'critical') {
+      return {
+        card: 'border-red-200 bg-red-50',
+        text: 'text-red-800',
+        label: 'Critical imbalance'
+      };
+    }
+    if (status === 'warning') {
+      return {
+        card: 'border-amber-200 bg-amber-50',
+        text: 'text-amber-800',
+        label: 'Imbalance warning'
+      };
+    }
+    if (status === 'healthy') {
+      return {
+        card: 'border-emerald-200 bg-emerald-50',
+        text: 'text-emerald-800',
+        label: 'Balanced'
+      };
+    }
+    return {
+      card: 'border-gray-200 bg-gray-50',
+      text: 'text-gray-700',
+      label: 'Insufficient data'
+    };
+  })();
+
+  const annotationCompletionRate = Number(annotationProgress.completion_rate || 0);
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-green-50 to-white">
@@ -291,6 +367,182 @@ export default function AdminDashboard({ navigate }) {
             <p className="mt-1 text-2xl font-semibold text-red-700">{pendingRetraining ?? '-'}</p>
             <p className="mt-1 text-xs text-red-700">Pending model reviews</p>
           </button>
+        </section>
+
+        <section className="rounded-3xl border border-green-100 bg-white p-6 shadow-sm">
+          <div className="mb-5 flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+            <div>
+              <div className="inline-flex items-center gap-2 rounded-full bg-green-100 px-3 py-1 text-xs font-medium uppercase tracking-wide text-green-700">
+                <Database className="h-3.5 w-3.5" />
+                Dataset Manager
+              </div>
+              <h2 className="mt-2 text-xl font-semibold text-gray-900">Admin Intelligence Layer</h2>
+              <p className="text-sm text-gray-500">
+                Track dataset growth, annotation momentum, class balance, and retraining readiness.
+              </p>
+            </div>
+
+            <div className="flex flex-wrap gap-2">
+              <button
+                onClick={() => navigate('upload')}
+                className="inline-flex items-center gap-2 rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm font-medium text-gray-700 transition hover:border-green-500 hover:text-green-700"
+              >
+                <UploadCloud className="h-4 w-4" />
+                Upload Images
+              </button>
+              <button
+                onClick={() => navigate('admin-images')}
+                className="rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm font-medium text-gray-700 transition hover:border-green-500 hover:text-green-700"
+              >
+                Label Images
+              </button>
+              <button
+                onClick={() => setActiveTab('retraining')}
+                className="rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm font-medium text-gray-700 transition hover:border-green-500 hover:text-green-700"
+              >
+                Approve Annotations
+              </button>
+              <button
+                onClick={() => navigate('admin-images')}
+                className="rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm font-medium text-gray-700 transition hover:border-green-500 hover:text-green-700"
+              >
+                Delete Wrong Samples
+              </button>
+              <button
+                onClick={() => setActiveTab('retraining')}
+                className="rounded-lg bg-gradient-to-r from-green-600 to-green-700 px-3 py-2 text-sm font-semibold text-white transition hover:from-green-700 hover:to-green-800"
+              >
+                Retrain Model
+              </button>
+            </div>
+          </div>
+
+          {datasetState.loading ? (
+            <div className="flex items-center justify-center rounded-2xl border border-gray-200 bg-gray-50 px-6 py-12 text-gray-600">
+              <Loader2 className="mr-2 h-5 w-5 animate-spin" />
+              Loading dataset intelligence...
+            </div>
+          ) : null}
+
+          {!datasetState.loading && datasetState.error ? (
+            <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+              {datasetState.error}
+            </div>
+          ) : null}
+
+          {!datasetState.loading && !datasetState.error ? (
+            <div className="grid gap-4 lg:grid-cols-2">
+              <article className="rounded-2xl border border-gray-200 bg-gray-50 p-4">
+                <p className="text-xs uppercase tracking-wide text-gray-500">Dataset Size</p>
+                <div className="mt-3 grid gap-3 sm:grid-cols-3">
+                  <div className="rounded-xl border border-gray-200 bg-white px-3 py-3">
+                    <p className="text-xs text-gray-500">Images</p>
+                    <p className="mt-1 text-xl font-semibold text-gray-900">
+                      {formatInteger(datasetSize.images)}
+                    </p>
+                  </div>
+                  <div className="rounded-xl border border-gray-200 bg-white px-3 py-3">
+                    <p className="text-xs text-gray-500">Predictions</p>
+                    <p className="mt-1 text-xl font-semibold text-gray-900">
+                      {formatInteger(datasetSize.predictions)}
+                    </p>
+                  </div>
+                  <div className="rounded-xl border border-gray-200 bg-white px-3 py-3">
+                    <p className="text-xs text-gray-500">Labeled</p>
+                    <p className="mt-1 text-xl font-semibold text-gray-900">
+                      {formatInteger(datasetSize.labeled_predictions)}
+                    </p>
+                  </div>
+                </div>
+              </article>
+
+              <article className="rounded-2xl border border-gray-200 bg-gray-50 p-4">
+                <p className="text-xs uppercase tracking-wide text-gray-500">Annotation Progress</p>
+                <div className="mt-3 rounded-xl border border-gray-200 bg-white px-3 py-3">
+                  <div className="mb-2 flex items-center justify-between text-sm">
+                    <span className="text-gray-600">Completion</span>
+                    <span className="font-semibold text-gray-900">{annotationCompletionRate}%</span>
+                  </div>
+                  <div className="h-2.5 w-full overflow-hidden rounded-full bg-gray-200">
+                    <div
+                      className="h-full rounded-full bg-gradient-to-r from-green-500 to-green-700"
+                      style={{ width: `${Math.max(0, Math.min(100, annotationCompletionRate))}%` }}
+                    />
+                  </div>
+                  <div className="mt-3 grid grid-cols-2 gap-2 text-xs text-gray-600 sm:grid-cols-4">
+                    <div className="rounded-lg bg-gray-100 px-2 py-2">
+                      Queue: <span className="font-semibold">{formatInteger(annotationProgress.queue_total)}</span>
+                    </div>
+                    <div className="rounded-lg bg-orange-100 px-2 py-2 text-orange-800">
+                      Pending: <span className="font-semibold">{formatInteger(annotationProgress.pending)}</span>
+                    </div>
+                    <div className="rounded-lg bg-green-100 px-2 py-2 text-green-800">
+                      Approved: <span className="font-semibold">{formatInteger(annotationProgress.approved)}</span>
+                    </div>
+                    <div className="rounded-lg bg-red-100 px-2 py-2 text-red-800">
+                      Rejected: <span className="font-semibold">{formatInteger(annotationProgress.rejected)}</span>
+                    </div>
+                  </div>
+                </div>
+              </article>
+
+              <article className="rounded-2xl border border-gray-200 bg-gray-50 p-4">
+                <div className="mb-3 flex items-center gap-2">
+                  <BarChart3 className="h-4 w-4 text-green-700" />
+                  <p className="text-xs uppercase tracking-wide text-gray-500">Classes Distribution</p>
+                </div>
+                {classDistribution.length === 0 ? (
+                  <p className="rounded-xl border border-dashed border-gray-300 bg-white px-3 py-6 text-sm text-gray-500">
+                    No class data yet.
+                  </p>
+                ) : (
+                  <div className="space-y-2">
+                    {classDistribution.map((item) => (
+                      <div key={item.label} className="rounded-xl border border-gray-200 bg-white px-3 py-2.5">
+                        <div className="mb-1 flex items-center justify-between gap-2 text-xs">
+                          <span className="truncate font-medium text-gray-700">{item.label}</span>
+                          <span className="text-gray-500">
+                            {formatInteger(item.count)} ({item.share}%)
+                          </span>
+                        </div>
+                        <div className="h-2 w-full overflow-hidden rounded-full bg-gray-200">
+                          <div
+                            className="h-full rounded-full bg-gradient-to-r from-emerald-400 to-green-700"
+                            style={{ width: `${Math.max(3, Math.min(100, Number(item.share || 0)))}%` }}
+                          />
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </article>
+
+              <article className={`rounded-2xl border p-4 ${imbalanceTone.card}`}>
+                <div className={`mb-2 inline-flex items-center gap-2 rounded-full px-3 py-1 text-xs font-semibold ${imbalanceTone.text}`}>
+                  <AlertTriangle className="h-3.5 w-3.5" />
+                  {imbalanceTone.label}
+                </div>
+                <p className={`text-sm ${imbalanceTone.text}`}>
+                  {classImbalance?.message || 'No class imbalance signal yet.'}
+                </p>
+                {Array.isArray(classImbalance?.minority_classes) && classImbalance.minority_classes.length > 0 ? (
+                  <div className="mt-3">
+                    <p className={`text-xs uppercase tracking-wide ${imbalanceTone.text}`}>Minority Classes</p>
+                    <div className="mt-2 flex flex-wrap gap-2">
+                      {classImbalance.minority_classes.map((label) => (
+                        <span
+                          key={label}
+                          className={`rounded-full border border-current/20 px-2.5 py-1 text-xs ${imbalanceTone.text}`}
+                        >
+                          {label}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                ) : null}
+              </article>
+            </div>
+          ) : null}
         </section>
 
         <section className="rounded-2xl border border-green-100 bg-white p-3 shadow-sm">

@@ -516,7 +516,11 @@ const analyzeUploadedImageForUser = async ({ file, userId, cropHint = '' }) => {
   });
 
   const predictionPayload = await forwardImageToPredictionService(file, normalizedCropHint);
-  const prediction = await persistPredictionForUser(userId, file.path, predictionPayload);
+  const predictionRow = await persistPredictionForUser(userId, file.path, predictionPayload);
+  const prediction = {
+    ...predictionPayload,
+    ...predictionRow
+  };
 
   return {
     prediction,
@@ -2925,6 +2929,185 @@ app.get('/api/admin/images', authenticateToken, requireAdmin, async (req, res) =
     });
   } catch (error) {
     console.error('Admin images error:', error);
+    return res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// DELETE /api/admin/images/:imageId
+// Purpose: admin-only delete image sample (and cascade related prediction records).
+app.delete('/api/admin/images/:imageId', authenticateToken, requireAdmin, async (req, res) => {
+  const imageId = Number(req.params.imageId);
+  if (!imageId) {
+    return res.status(400).json({ error: 'Invalid image ID' });
+  }
+
+  try {
+    const deleteQuery = `
+      DELETE FROM image
+      WHERE image_id = $1
+      RETURNING image_id, image_path
+    `;
+    const deleteResult = await pool.query(deleteQuery, [imageId]);
+    const deleted = deleteResult.rows[0];
+
+    if (!deleted) {
+      return res.status(404).json({ error: 'Image not found' });
+    }
+
+    const imagePath = String(deleted.image_path || '').trim();
+    if (imagePath) {
+      try {
+        const uploadsRoot = path.resolve(uploadsDir);
+        const resolvedImagePath = path.resolve(__dirname, imagePath);
+        const withinUploadsRoot =
+          resolvedImagePath === uploadsRoot ||
+          resolvedImagePath.startsWith(`${uploadsRoot}${path.sep}`);
+
+        if (withinUploadsRoot && fs.existsSync(resolvedImagePath)) {
+          fs.unlinkSync(resolvedImagePath);
+        }
+      } catch (fileError) {
+        console.warn('Image file cleanup warning:', fileError?.message || fileError);
+      }
+    }
+
+    return res.json({
+      success: true,
+      image_id: deleted.image_id
+    });
+  } catch (error) {
+    console.error('Admin delete image error:', error);
+    return res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// -------------------- Admin: dataset manager metrics --------------------
+
+// GET /api/admin/dataset-metrics
+// Purpose: admin intelligence layer for dataset health and annotation progress.
+app.get('/api/admin/dataset-metrics', authenticateToken, requireAdmin, async (_req, res) => {
+  try {
+    const totalsResult = await pool.query(`
+      SELECT
+        (SELECT COUNT(*)::INT FROM image) AS images_total,
+        (SELECT COUNT(*)::INT FROM prediction) AS predictions_total,
+        (
+          SELECT COUNT(*)::INT
+          FROM prediction
+          WHERE label IS NOT NULL AND TRIM(label) <> ''
+        ) AS labeled_total
+    `);
+    const totalsRow = totalsResult.rows[0] || {};
+
+    const queueSummaryResult = await pool.query(`
+      SELECT
+        COUNT(*)::INT AS queue_total,
+        COUNT(*) FILTER (WHERE status = 'PENDING')::INT AS pending_total,
+        COUNT(*) FILTER (WHERE status = 'APPROVED')::INT AS approved_total,
+        COUNT(*) FILTER (WHERE status = 'REJECTED')::INT AS rejected_total
+      FROM retraining_queue
+    `);
+    const queueSummary = queueSummaryResult.rows[0] || {};
+
+    const correctionSummaryResult = await pool.query(`
+      SELECT
+        COUNT(DISTINCT prediction_id)::INT AS corrected_predictions,
+        COUNT(*)::INT AS total_corrections
+      FROM annotator_correction
+    `);
+    const correctionSummary = correctionSummaryResult.rows[0] || {};
+
+    const classDistributionResult = await pool.query(`
+      SELECT
+        label,
+        COUNT(*)::INT AS sample_count
+      FROM prediction
+      WHERE
+        label IS NOT NULL
+        AND TRIM(label) <> ''
+        AND LOWER(TRIM(label)) NOT IN (
+          'invalid_image',
+          'retake_photo',
+          'uncertain_prediction',
+          'unknown_crop',
+          'unsupported_crop',
+          'invalid_crop_hint'
+        )
+      GROUP BY label
+      ORDER BY sample_count DESC, label ASC
+      LIMIT 12
+    `);
+
+    const classDistribution = classDistributionResult.rows.map((row) => ({
+      label: row.label,
+      count: Number(row.sample_count || 0)
+    }));
+
+    const classSampleTotal = classDistribution.reduce((sum, item) => sum + Number(item.count || 0), 0);
+    const classDistributionWithShare = classDistribution.map((item) => ({
+      ...item,
+      share: classSampleTotal > 0 ? Number(((item.count / classSampleTotal) * 100).toFixed(1)) : 0
+    }));
+
+    const maxClassCount = classDistribution.length > 0 ? Number(classDistribution[0].count || 0) : 0;
+    const minClassCount = classDistribution.length > 0
+      ? Number(classDistribution[classDistribution.length - 1].count || 0)
+      : 0;
+    const imbalanceRatio = maxClassCount > 0 ? Number((minClassCount / maxClassCount).toFixed(3)) : 1;
+
+    const lowClassThreshold = Math.max(5, Math.round(classSampleTotal * 0.05));
+    const minorityClasses = classDistributionWithShare
+      .filter((item) => Number(item.count || 0) <= lowClassThreshold)
+      .map((item) => item.label);
+
+    let imbalanceStatus = 'healthy';
+    let imbalanceMessage = 'Class balance looks healthy.';
+
+    if (classDistributionWithShare.length < 2) {
+      imbalanceStatus = 'insufficient_data';
+      imbalanceMessage = 'Need at least two labeled classes to evaluate imbalance.';
+    } else if (imbalanceRatio < 0.2) {
+      imbalanceStatus = 'critical';
+      imbalanceMessage = 'Severe imbalance detected. Minority classes need targeted sampling.';
+    } else if (imbalanceRatio < 0.4) {
+      imbalanceStatus = 'warning';
+      imbalanceMessage = 'Moderate class imbalance detected. Add more data for smaller classes.';
+    }
+
+    const queueTotal = Number(queueSummary.queue_total || 0);
+    const correctedPredictions = Number(correctionSummary.corrected_predictions || 0);
+    const completionRate = queueTotal > 0
+      ? Number(((correctedPredictions / queueTotal) * 100).toFixed(1))
+      : 100;
+
+    return res.json({
+      dataset_size: {
+        images: Number(totalsRow.images_total || 0),
+        predictions: Number(totalsRow.predictions_total || 0),
+        labeled_predictions: Number(totalsRow.labeled_total || 0)
+      },
+      class_distribution: classDistributionWithShare,
+      annotation_progress: {
+        queue_total: queueTotal,
+        pending: Number(queueSummary.pending_total || 0),
+        approved: Number(queueSummary.approved_total || 0),
+        rejected: Number(queueSummary.rejected_total || 0),
+        corrected_predictions: correctedPredictions,
+        total_corrections: Number(correctionSummary.total_corrections || 0),
+        completion_rate: completionRate
+      },
+      class_imbalance: {
+        status: imbalanceStatus,
+        message: imbalanceMessage,
+        ratio: imbalanceRatio,
+        max_class_count: maxClassCount,
+        min_class_count: minClassCount,
+        low_class_threshold: lowClassThreshold,
+        minority_classes: minorityClasses
+      }
+    });
+  } catch (error) {
+    console.error('Admin dataset metrics error:', error);
     return res.status(500).json({ error: 'Internal server error' });
   }
 });

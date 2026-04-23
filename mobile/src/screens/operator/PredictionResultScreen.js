@@ -5,16 +5,12 @@ import PrimaryButton from '../../components/PrimaryButton';
 import { flagForRetrainingApi, toggleBookmarkApi } from '../../api/client';
 import { resolveBackendAssetUrl } from '../../constants/config';
 import { useAuth } from '../../context/AuthContext';
-
-const formatConfidence = (confidence) => {
-  const parsed = Number(confidence);
-  if (!Number.isFinite(parsed)) return 'N/A';
-  return `${Math.round(parsed * 100)}%`;
-};
+import { evaluatePredictionDecision, formatPredictionLabel } from '../../utils/predictionDecision';
 
 export default function PredictionResultScreen({ navigation, route }) {
   const { session } = useAuth();
   const prediction = route.params?.prediction || {};
+  const decision = evaluatePredictionDecision(prediction);
   const [bookmarked, setBookmarked] = useState(Boolean(prediction?.bookmark_id));
   const [bookmarkLoading, setBookmarkLoading] = useState(false);
   const [flagLoading, setFlagLoading] = useState(false);
@@ -22,6 +18,46 @@ export default function PredictionResultScreen({ navigation, route }) {
   const remoteImageUri = resolveBackendAssetUrl(prediction?.image_url || '');
   const displayUri = localImageUri || remoteImageUri;
   const predictionId = useMemo(() => Number(prediction?.prediction_id || 0), [prediction?.prediction_id]);
+  const isRetrainingEligible =
+    decision.confidencePercent !== null && decision.confidencePercent < 70 && !decision.isWrongCrop;
+
+  const tone = useMemo(() => {
+    const tones = {
+      success: {
+        badgeBg: '#ecfdf5',
+        badgeText: '#047857',
+        cardBg: '#ecfdf5',
+        cardBorder: '#6ee7b7',
+        title: '#065f46',
+        body: '#047857'
+      },
+      warning: {
+        badgeBg: '#fffbeb',
+        badgeText: '#b45309',
+        cardBg: '#fffbeb',
+        cardBorder: '#fcd34d',
+        title: '#92400e',
+        body: '#b45309'
+      },
+      danger: {
+        badgeBg: '#fef2f2',
+        badgeText: '#b91c1c',
+        cardBg: '#fef2f2',
+        cardBorder: '#fca5a5',
+        title: '#991b1b',
+        body: '#b91c1c'
+      },
+      neutral: {
+        badgeBg: '#f1f5f9',
+        badgeText: '#334155',
+        cardBg: '#f8fafc',
+        cardBorder: '#cbd5e1',
+        title: '#0f172a',
+        body: '#334155'
+      }
+    };
+    return tones[decision.badgeTone] || tones.neutral;
+  }, [decision.badgeTone]);
 
   const handleBookmarkToggle = async () => {
     if (!predictionId) {
@@ -79,16 +115,41 @@ export default function PredictionResultScreen({ navigation, route }) {
 
       <View style={styles.resultCard}>
         <Text style={styles.label}>Disease / Condition</Text>
-        <Text style={styles.value}>{prediction?.label || 'Unknown'}</Text>
+        <Text style={styles.value}>{formatPredictionLabel(prediction?.label)}</Text>
 
         <Text style={styles.label}>Confidence</Text>
-        <Text style={styles.value}>{formatConfidence(prediction?.confidence)}</Text>
+        <Text style={styles.value}>
+          {decision.confidencePercent === null ? 'N/A' : `${decision.confidencePercent}%`}
+        </Text>
+
+        <Text style={styles.label}>Decision</Text>
+        <View style={[styles.badge, { backgroundColor: tone.badgeBg }]}>
+          <Text style={[styles.badgeText, { color: tone.badgeText }]}>{decision.badgeText}</Text>
+        </View>
 
         <Text style={styles.label}>Suggested Treatment</Text>
         <Text style={styles.description}>{prediction?.suggested_sc || 'No suggestion available.'}</Text>
       </View>
 
+      {!decision.isAccepted && (
+        <View style={[styles.warningCard, { backgroundColor: tone.cardBg, borderColor: tone.cardBorder }]}>
+          <Text style={[styles.warningTitle, { color: tone.title }]}>{decision.title}</Text>
+          <Text style={[styles.warningText, { color: tone.body }]}>{decision.message}</Text>
+          {decision.suggestions.map((tip) => (
+            <Text key={tip} style={[styles.suggestionItem, { color: tone.body }]}>
+              {'\u2022'} {tip}
+            </Text>
+          ))}
+        </View>
+      )}
+
       <View style={styles.actions}>
+        {decision.requiresRetake ? (
+          <PrimaryButton
+            title={decision.isWrongCrop ? 'Capture New Crop Image' : 'Retake Image'}
+            onPress={() => navigation.navigate('CaptureUpload')}
+          />
+        ) : null}
         <PrimaryButton
           title="Analyze Another Image"
           onPress={() => navigation.navigate('CaptureUpload')}
@@ -113,6 +174,7 @@ export default function PredictionResultScreen({ navigation, route }) {
           title="Flag for Retraining"
           onPress={handleFlagForRetraining}
           loading={flagLoading}
+          disabled={!isRetrainingEligible}
         />
         <PrimaryButton
           variant="secondary"
@@ -164,6 +226,34 @@ const styles = StyleSheet.create({
   description: {
     color: '#334155',
     lineHeight: 20
+  },
+  badge: {
+    alignSelf: 'flex-start',
+    borderRadius: 999,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    marginBottom: 6
+  },
+  badgeText: {
+    fontWeight: '700',
+    fontSize: 13
+  },
+  warningCard: {
+    borderWidth: 1,
+    borderRadius: 12,
+    padding: 12,
+    marginBottom: 14
+  },
+  warningTitle: {
+    fontWeight: '800',
+    marginBottom: 4
+  },
+  warningText: {
+    lineHeight: 19
+  },
+  suggestionItem: {
+    marginTop: 6,
+    lineHeight: 19
   },
   actions: {
     gap: 10

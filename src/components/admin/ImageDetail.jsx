@@ -1,3 +1,7 @@
+import { useState } from 'react';
+import { Loader2, Trash2 } from 'lucide-react';
+import { deleteAdminImage } from '../../utils/api';
+
 const formatDate = (value) => {
   if (!value) return '--';
   const date = new Date(value);
@@ -13,6 +17,29 @@ const formatConfidence = (confidence) => {
 
 export default function ImageDetail({ navigate, imageId, image }) {
   const hasImage = Boolean(image);
+  const [isDeleting, setIsDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState('');
+
+  const handleDeleteSample = async () => {
+    const targetImageId = Number(image?.image_id || imageId || 0);
+    if (!targetImageId || isDeleting) return;
+
+    const confirmed = window.confirm(
+      `Delete image #${targetImageId}? This will also remove related prediction and queue records.`
+    );
+    if (!confirmed) return;
+
+    setDeleteError('');
+    setIsDeleting(true);
+    try {
+      await deleteAdminImage(targetImageId);
+      navigate('admin-images');
+    } catch (error) {
+      setDeleteError(error?.detail || error?.error || 'Failed to delete image sample.');
+    } finally {
+      setIsDeleting(false);
+    }
+  };
 
   return (
     <div className="min-h-screen bg-gray-50">
@@ -87,6 +114,25 @@ export default function ImageDetail({ navigate, imageId, image }) {
                 <div>
                   <span className="text-gray-500">Prediction ID:</span> {image.prediction_id || '--'}
                 </div>
+              </div>
+
+              <div className="pt-4 border-t border-gray-100">
+                <button
+                  onClick={handleDeleteSample}
+                  disabled={isDeleting}
+                  className="inline-flex items-center gap-2 rounded-lg bg-red-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-red-700 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {isDeleting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Trash2 className="h-4 w-4" />}
+                  {isDeleting ? 'Deleting Sample...' : 'Delete Wrong Sample'}
+                </button>
+                <p className="mt-2 text-xs text-gray-500">
+                  Deletes this image and its linked prediction records from the dataset.
+                </p>
+                {deleteError ? (
+                  <div className="mt-3 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+                    {deleteError}
+                  </div>
+                ) : null}
               </div>
             </div>
           </div>

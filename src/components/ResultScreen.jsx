@@ -1,14 +1,13 @@
-import { ArrowLeft, AlertTriangle, CheckCircle2, Flag, Loader2, MessageSquare } from 'lucide-react';
+import { ArrowLeft, AlertTriangle, Camera, CheckCircle2, Flag, Loader2, MessageSquare } from 'lucide-react';
 import { useState } from 'react';
 import { Button } from './ui/button';
 import { ImageWithFallback } from './figma/ImageWithFallback';
 import { flagPredictionForRetraining } from '../utils/api';
+import { evaluatePredictionDecision, formatPredictionLabel } from '../utils/predictionDecision';
 
 export default function ResultScreen({ navigate, selectedImage, currentPrediction, currentUser }) {
   const prediction = currentPrediction || null;
-  const confidencePercent = prediction?.confidence
-    ? Math.round(Number(prediction.confidence) * 100)
-    : null;
+  const decision = evaluatePredictionDecision(prediction);
   const topPredictions = Array.isArray(prediction?.top_predictions) ? prediction.top_predictions : [];
   const cropContext = prediction?.crop || prediction?.crop_hint || prediction?.inferred_crop_hint || null;
   
@@ -18,9 +17,45 @@ export default function ResultScreen({ navigate, selectedImage, currentPredictio
   const [flagStatus, setFlagStatus] = useState(prediction?.flagged_for_retraining ? 'flagged' : null);
   const [flagError, setFlagError] = useState(null);
 
-  const isLowConfidence = confidencePercent !== null && confidencePercent < 70;
+  const isRetrainingEligible = decision.confidencePercent !== null && decision.confidencePercent < 70 && !decision.isWrongCrop;
   const userId = currentUser?.id || currentUser?.user_id;
   const predictionId = prediction?.prediction_id;
+
+  const toneStyles = {
+    success: {
+      badge: 'bg-emerald-50 text-emerald-700',
+      panel: 'border-emerald-200 bg-emerald-50',
+      panelTitle: 'text-emerald-900',
+      panelText: 'text-emerald-800',
+      panelIcon: 'text-emerald-600',
+      panelButton: 'bg-emerald-600 hover:bg-emerald-700'
+    },
+    warning: {
+      badge: 'bg-amber-50 text-amber-700',
+      panel: 'border-amber-200 bg-amber-50',
+      panelTitle: 'text-amber-900',
+      panelText: 'text-amber-800',
+      panelIcon: 'text-amber-600',
+      panelButton: 'bg-amber-600 hover:bg-amber-700'
+    },
+    danger: {
+      badge: 'bg-red-50 text-red-700',
+      panel: 'border-red-200 bg-red-50',
+      panelTitle: 'text-red-900',
+      panelText: 'text-red-800',
+      panelIcon: 'text-red-600',
+      panelButton: 'bg-red-600 hover:bg-red-700'
+    },
+    neutral: {
+      badge: 'bg-slate-100 text-slate-700',
+      panel: 'border-slate-200 bg-slate-50',
+      panelTitle: 'text-slate-900',
+      panelText: 'text-slate-700',
+      panelIcon: 'text-slate-600',
+      panelButton: 'bg-slate-700 hover:bg-slate-800'
+    }
+  };
+  const tone = toneStyles[decision.badgeTone] || toneStyles.neutral;
 
   const handleFlagClick = () => {
     setShowFlagModal(true);
@@ -57,27 +92,12 @@ export default function ResultScreen({ navigate, selectedImage, currentPredictio
   };
 
   const renderConfidenceBadge = () => {
-    if (confidencePercent === null) return null;
-    if (confidencePercent >= 85) {
-      return (
-        <span className="inline-flex items-center gap-2 rounded-full bg-emerald-50 px-3 py-1 text-emerald-700">
-          <CheckCircle2 className="h-4 w-4" />
-          High confidence ({confidencePercent}%)
-        </span>
-      );
-    }
-    if (confidencePercent >= 70) {
-      return (
-        <span className="inline-flex items-center gap-2 rounded-full bg-amber-50 px-3 py-1 text-amber-700">
-          <AlertTriangle className="h-4 w-4" />
-          Medium confidence ({confidencePercent}%)
-        </span>
-      );
-    }
+    if (!decision.badgeText) return null;
+    const Icon = decision.badgeTone === 'success' ? CheckCircle2 : AlertTriangle;
     return (
-      <span className="inline-flex items-center gap-2 rounded-full bg-red-50 px-3 py-1 text-red-700">
-        <AlertTriangle className="h-4 w-4" />
-        Low confidence ({confidencePercent}%)
+      <span className={`inline-flex items-center gap-2 rounded-full px-3 py-1 ${tone.badge}`}>
+        <Icon className="h-4 w-4" />
+        {decision.badgeText}
       </span>
     );
   };
@@ -112,11 +132,39 @@ export default function ResultScreen({ navigate, selectedImage, currentPredictio
             <div>
               <p className="text-gray-500 text-sm">Prediction</p>
               <h3 className="text-2xl text-gray-900 capitalize">
-                {prediction?.label || 'No prediction'}
+                {formatPredictionLabel(prediction?.label)}
               </h3>
             </div>
             {renderConfidenceBadge()}
           </div>
+
+          {!decision.isAccepted && (
+            <div className={`rounded-xl border-2 p-4 ${tone.panel}`}>
+              <div className="flex items-start gap-3">
+                <AlertTriangle className={`h-5 w-5 flex-shrink-0 mt-0.5 ${tone.panelIcon}`} />
+                <div className="flex-1">
+                  <p className={`font-semibold ${tone.panelTitle}`}>{decision.title}</p>
+                  <p className={`text-sm mt-1 ${tone.panelText}`}>{decision.message}</p>
+                  {decision.suggestions.length > 0 && (
+                    <ul className={`mt-2 list-disc pl-5 text-sm space-y-1 ${tone.panelText}`}>
+                      {decision.suggestions.map((tip) => (
+                        <li key={tip}>{tip}</li>
+                      ))}
+                    </ul>
+                  )}
+                  {decision.requiresRetake && (
+                    <button
+                      onClick={() => navigate('upload', { replace: true })}
+                      className={`mt-3 inline-flex items-center gap-2 px-4 py-2 text-white rounded-lg font-medium transition-colors ${tone.panelButton}`}
+                    >
+                      <Camera className="h-4 w-4" />
+                      Capture New Image
+                    </button>
+                  )}
+                </div>
+              </div>
+            </div>
+          )}
 
           <div className="grid gap-3 sm:grid-cols-2">
             <div className="rounded-xl border border-gray-100 bg-gray-50 p-4">
@@ -194,15 +242,15 @@ export default function ResultScreen({ navigate, selectedImage, currentPredictio
             )}
           </div>
 
-          {/* Low Confidence Alert & Flag Button */}
-          {isLowConfidence && (
+          {/* Retraining Alert & Flag Button */}
+          {isRetrainingEligible && (
             <div className="rounded-xl border-2 border-red-200 bg-red-50 p-4">
               <div className="flex items-start gap-3">
                 <AlertTriangle className="h-5 w-5 text-red-600 flex-shrink-0 mt-0.5" />
                 <div className="flex-1">
-                  <p className="font-semibold text-red-900">Low Confidence Prediction</p>
+                  <p className="font-semibold text-red-900">Low Confidence For Retraining</p>
                   <p className="text-sm text-red-800 mt-1">
-                    This prediction has low confidence. You can help improve our model by flagging it for retraining.
+                    Confidence is below 70%. You can flag this result for model retraining review.
                   </p>
                   {flagStatus === 'flagged' ? (
                     <div className="mt-3 flex items-center gap-2 text-green-700 bg-green-100 px-3 py-2 rounded-lg">

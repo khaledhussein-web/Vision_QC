@@ -516,6 +516,36 @@ export async function getAdminImages(page = 1, perPage = 20) {
 }
 
 /**
+ * Admin: Delete Image Sample
+ * DELETE /api/admin/images/{image_id}
+ */
+export async function deleteAdminImage(imageId) {
+  const response = await fetch(`${API_BASE_URL}/api/admin/images/${imageId}`, {
+    method: 'DELETE',
+    headers: {
+      ...getAuthHeaders()
+    }
+  });
+
+  return parseResponse(response);
+}
+
+/**
+ * Admin: Dataset Manager Metrics
+ * GET /api/admin/dataset-metrics
+ */
+export async function getAdminDatasetMetrics() {
+  const response = await fetch(`${API_BASE_URL}/api/admin/dataset-metrics`, {
+    method: 'GET',
+    headers: {
+      ...getAuthHeaders()
+    }
+  });
+
+  return parseResponse(response);
+}
+
+/**
  * Admin: List Reports
  * GET /api/admin/reports
  */
