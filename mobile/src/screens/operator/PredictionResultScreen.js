@@ -5,12 +5,17 @@ import PrimaryButton from '../../components/PrimaryButton';
 import { flagForRetrainingApi, toggleBookmarkApi } from '../../api/client';
 import { resolveBackendAssetUrl } from '../../constants/config';
 import { useAuth } from '../../context/AuthContext';
-import { evaluatePredictionDecision, formatPredictionLabel } from '../../utils/predictionDecision';
+import {
+  evaluatePredictionDecision,
+  formatPredictionLabel,
+  getExplainabilityOverlay
+} from '../../utils/predictionDecision';
 
 export default function PredictionResultScreen({ navigation, route }) {
   const { session } = useAuth();
   const prediction = route.params?.prediction || {};
   const decision = evaluatePredictionDecision(prediction);
+  const explainability = getExplainabilityOverlay(prediction);
   const [bookmarked, setBookmarked] = useState(Boolean(prediction?.bookmark_id));
   const [bookmarkLoading, setBookmarkLoading] = useState(false);
   const [flagLoading, setFlagLoading] = useState(false);
@@ -131,6 +136,21 @@ export default function PredictionResultScreen({ navigation, route }) {
         <Text style={styles.description}>{prediction?.suggested_sc || 'No suggestion available.'}</Text>
       </View>
 
+      <View
+        style={[
+          styles.explainabilityCard,
+          explainability.tone === 'success'
+            ? styles.explainabilitySuccess
+            : explainability.tone === 'danger'
+              ? styles.explainabilityDanger
+              : styles.explainabilityWarning
+        ]}
+      >
+        <Text style={styles.explainabilityTitle}>Explainability Overlay</Text>
+        <Text style={styles.explainabilityText}>{explainability.focusMessage}</Text>
+        <Text style={styles.explainabilityText}>{explainability.reliabilityMessage}</Text>
+      </View>
+
       {!decision.isAccepted && (
         <View style={[styles.warningCard, { backgroundColor: tone.cardBg, borderColor: tone.cardBorder }]}>
           <Text style={[styles.warningTitle, { color: tone.title }]}>{decision.title}</Text>
@@ -249,6 +269,33 @@ const styles = StyleSheet.create({
     marginBottom: 4
   },
   warningText: {
+    lineHeight: 19
+  },
+  explainabilityCard: {
+    borderWidth: 1,
+    borderRadius: 12,
+    padding: 12,
+    marginBottom: 14
+  },
+  explainabilitySuccess: {
+    borderColor: '#6ee7b7',
+    backgroundColor: '#ecfdf5'
+  },
+  explainabilityWarning: {
+    borderColor: '#fcd34d',
+    backgroundColor: '#fffbeb'
+  },
+  explainabilityDanger: {
+    borderColor: '#fca5a5',
+    backgroundColor: '#fef2f2'
+  },
+  explainabilityTitle: {
+    color: '#0f172a',
+    fontWeight: '800',
+    marginBottom: 4
+  },
+  explainabilityText: {
+    color: '#334155',
     lineHeight: 19
   },
   suggestionItem: {

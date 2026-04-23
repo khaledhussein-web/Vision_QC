@@ -715,12 +715,112 @@ def build_treatment_advice(model_label: str, confidence: float) -> str:
     )
 
 
-def make_gradcam(pil_img: Image.Image, class_idx: int) -> str:
+def analyze_gradcam_focus(grayscale_cam: np.ndarray) -> dict:
+    cam = np.array(grayscale_cam, dtype=np.float32)
+    if cam.ndim != 2:
+        return {
+            "focus_assessment": "unknown",
+            "focus_score": 0.0,
+            "center_focus": 0.0,
+            "edge_focus": 0.0,
+            "hotspot_coverage": 0.0,
+            "centroid_distance": 1.0,
+        }
+
+    cam = np.clip(cam, 0.0, 1.0)
+    if cam.max() > 0:
+        cam = cam / float(cam.max())
+
+    weights = np.power(cam, 2.0)
+    total = float(np.sum(weights))
+    if total <= 1e-8:
+        return {
+            "focus_assessment": "unknown",
+            "focus_score": 0.0,
+            "center_focus": 0.0,
+            "edge_focus": 0.0,
+            "hotspot_coverage": 0.0,
+            "centroid_distance": 1.0,
+        }
+
+    h, w = cam.shape
+    ys, xs = np.indices(cam.shape)
+    x_norm = xs / max(w - 1, 1)
+    y_norm = ys / max(h - 1, 1)
+
+    center_mask = (x_norm >= 0.2) & (x_norm <= 0.8) & (y_norm >= 0.2) & (y_norm <= 0.8)
+    edge_mask = (x_norm <= 0.12) | (x_norm >= 0.88) | (y_norm <= 0.12) | (y_norm >= 0.88)
+
+    center_focus = float(np.sum(weights[center_mask]) / total)
+    edge_focus = float(np.sum(weights[edge_mask]) / total)
+
+    centroid_x = float(np.sum(x_norm * weights) / total)
+    centroid_y = float(np.sum(y_norm * weights) / total)
+    centroid_distance = float(np.sqrt((centroid_x - 0.5) ** 2 + (centroid_y - 0.5) ** 2))
+    centroid_penalty = min(centroid_distance / 0.5, 1.0)
+
+    hotspot_threshold = float(np.quantile(cam, 0.9))
+    hotspot_coverage = float(np.mean(cam >= hotspot_threshold))
+    diffuse_penalty = max(0.0, min((hotspot_coverage - 0.35) * 0.75, 0.3))
+
+    focus_score = (0.45 * center_focus) + (0.35 * (1.0 - edge_focus)) + (0.20 * (1.0 - centroid_penalty))
+    focus_score = float(max(0.0, min(1.0, focus_score - diffuse_penalty)))
+
+    if focus_score >= 0.65:
+        focus_assessment = "lesion_area"
+    elif focus_score <= 0.45:
+        focus_assessment = "background"
+    else:
+        focus_assessment = "mixed"
+
+    return {
+        "focus_assessment": focus_assessment,
+        "focus_score": round(focus_score, 3),
+        "center_focus": round(center_focus, 3),
+        "edge_focus": round(edge_focus, 3),
+        "hotspot_coverage": round(hotspot_coverage, 3),
+        "centroid_distance": round(centroid_distance, 3),
+    }
+
+
+def build_explainability_overlay(focus_data: dict, confidence: float, top2_margin: float, is_uncertain: bool) -> dict:
+    focus_assessment = str(focus_data.get("focus_assessment", "unknown")).strip().lower()
+
+    if focus_assessment == "lesion_area":
+        focus_message = "Model focused on lesion area ✅"
+    elif focus_assessment == "background":
+        focus_message = "Model focused on background ❌"
+    elif focus_assessment == "mixed":
+        focus_message = "Model focus is mixed (review image context)"
+    else:
+        focus_message = "Model focus is unavailable (retry with clearer image)"
+
+    if is_uncertain or focus_assessment == "background" or confidence < 0.6:
+        prediction_reliability = "Low"
+    elif focus_assessment == "lesion_area" and confidence >= 0.9 and top2_margin >= LOW_MARGIN_THRESHOLD:
+        prediction_reliability = "High"
+    else:
+        prediction_reliability = "Medium"
+
+    return {
+        "focus_assessment": focus_assessment,
+        "focus_score": round(float(focus_data.get("focus_score", 0.0)), 3),
+        "center_focus": round(float(focus_data.get("center_focus", 0.0)), 3),
+        "edge_focus": round(float(focus_data.get("edge_focus", 0.0)), 3),
+        "hotspot_coverage": round(float(focus_data.get("hotspot_coverage", 0.0)), 3),
+        "focus_message": focus_message,
+        "prediction_reliability": prediction_reliability,
+        "reliability_message": f"Prediction reliability: {prediction_reliability}",
+    }
+
+
+def make_gradcam(pil_img: Image.Image, class_idx: int) -> tuple[str, dict]:
     pixel_values = preprocess_image(pil_img, disease_processor, "disease_gradcam").to(device)
 
     cam = GradCAM(model=cam_model, target_layers=[TARGET_LAYER])
     targets = [ClassifierOutputTarget(class_idx)]
     grayscale_cam = cam(input_tensor=pixel_values, targets=targets)[0]  # HxW
+    focus_data = analyze_gradcam_focus(grayscale_cam)
 
     height = pixel_values.shape[-2]
     width = pixel_values.shape[-1]
@@ -732,8 +832,8 @@ def make_gradcam(pil_img: Image.Image, class_idx: int) -> str:
     heatmap_bgr = cv2.cvtColor(heatmap, cv2.COLOR_RGB2BGR)
     ok, buf = cv2.imencode(".png", heatmap_bgr)
     if not ok:
-        return ""
-    return base64.b64encode(buf.tobytes()).decode("utf-8")
+        return "", focus_data
+    return base64.b64encode(buf.tobytes()).decode("utf-8"), focus_data
 
 
 # -------------------------
@@ -1092,9 +1192,16 @@ async def predict(image: UploadFile = File(...), crop_hint: str | None = Form(No
     top_values, _ = torch.topk(selected_probs, k=min(2, selected_probs.shape[0]))
     top2_margin = float(top_values[0] - top_values[1]) if top_values.shape[0] > 1 else float(top_values[0])
 
-    gradcam_b64 = make_gradcam(pil, class_idx)
+    gradcam_b64, gradcam_focus = make_gradcam(pil, class_idx)
+    is_uncertain_prediction = confidence < LOW_CONFIDENCE_THRESHOLD or top2_margin < LOW_MARGIN_THRESHOLD
+    explainability = build_explainability_overlay(
+        gradcam_focus,
+        confidence=confidence,
+        top2_margin=top2_margin,
+        is_uncertain=is_uncertain_prediction,
+    )
 
-    if confidence < LOW_CONFIDENCE_THRESHOLD or top2_margin < LOW_MARGIN_THRESHOLD:
+    if is_uncertain_prediction:
         top_summary = ", ".join(f"{item['label']} ({int(item['confidence'] * 100)}%)" for item in top_predictions)
         if not top_summary:
             top_summary = "no reliable class"
@@ -1118,6 +1225,7 @@ async def predict(image: UploadFile = File(...), crop_hint: str | None = Form(No
             "top_predictions": top_predictions,
             "inference_strategy": inference_strategy,
             "gradcam_png_base64": gradcam_b64,
+            "explainability": explainability,
             "quality": q_details,
             "mode": "vision_gradcam_uncertain",
         }
@@ -1138,6 +1246,7 @@ async def predict(image: UploadFile = File(...), crop_hint: str | None = Form(No
         "top_predictions": top_predictions,
         "inference_strategy": inference_strategy,
         "gradcam_png_base64": gradcam_b64,
+        "explainability": explainability,
         "quality": q_details,
         "mode": "vision_gradcam",
     }

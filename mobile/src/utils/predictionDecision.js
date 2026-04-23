@@ -110,7 +110,7 @@ export const evaluatePredictionDecision = (prediction) => {
       message: 'Image quality is too low for a reliable diagnosis.',
       badgeTone: 'danger',
       badgeText:
-        confidencePercent === null ? 'Retake required' : `Retake required • ${confidencePercent}%`,
+        confidencePercent === null ? 'Retake required' : `Retake required - ${confidencePercent}%`,
       confidencePercent,
       isAccepted: false,
       isRejected: true,
@@ -142,7 +142,7 @@ export const evaluatePredictionDecision = (prediction) => {
       title: 'Accepted prediction',
       message: 'Prediction confidence is strong enough to accept.',
       badgeTone: 'success',
-      badgeText: `Accepted • ${confidencePercent}%`,
+      badgeText: `Accepted - ${confidencePercent}%`,
       confidencePercent,
       isAccepted: true,
       isRejected: false,
@@ -158,7 +158,7 @@ export const evaluatePredictionDecision = (prediction) => {
       title: 'Retake suggested',
       message: 'Prediction is usable, but a clearer image could improve reliability.',
       badgeTone: 'warning',
-      badgeText: `Retake suggested • ${confidencePercent}%`,
+      badgeText: `Retake suggested - ${confidencePercent}%`,
       confidencePercent,
       isAccepted: false,
       isRejected: false,
@@ -173,13 +173,49 @@ export const evaluatePredictionDecision = (prediction) => {
     title: 'Prediction rejected',
     message: 'Confidence is below 60%, so this result should not be trusted.',
     badgeTone: 'danger',
-    badgeText: `Rejected • ${confidencePercent}%`,
+    badgeText: `Rejected - ${confidencePercent}%`,
     confidencePercent,
     isAccepted: false,
     isRejected: true,
     requiresRetake: true,
     isWrongCrop: false,
     suggestions: buildCaptureSuggestions(prediction, false)
+  };
+};
+
+export const getExplainabilityOverlay = (prediction) => {
+  const raw = prediction?.explainability;
+  if (raw && typeof raw === 'object') {
+    const focusAssessment = String(raw.focus_assessment || 'mixed').trim().toLowerCase();
+    const reliability = String(raw.prediction_reliability || 'Medium').trim();
+    let tone = 'warning';
+    if (focusAssessment === 'lesion_area') tone = 'success';
+    if (focusAssessment === 'background') tone = 'danger';
+
+    return {
+      tone,
+      focusAssessment,
+      focusMessage: String(raw.focus_message || 'Model focus is mixed.'),
+      reliabilityMessage: String(raw.reliability_message || `Prediction reliability: ${reliability}`),
+      reliability,
+      focusScore: Number(raw.focus_score)
+    };
+  }
+
+  const decision = evaluatePredictionDecision(prediction);
+  const fallbackReliability = decision.isAccepted
+    ? 'High'
+    : decision.status === 'retake_suggested'
+      ? 'Medium'
+      : 'Low';
+
+  return {
+    tone: decision.isAccepted ? 'success' : decision.isRejected ? 'danger' : 'warning',
+    focusAssessment: 'mixed',
+    focusMessage: 'Model focus is mixed (no Grad-CAM focus score available).',
+    reliabilityMessage: `Prediction reliability: ${fallbackReliability}`,
+    reliability: fallbackReliability,
+    focusScore: null
   };
 };
 

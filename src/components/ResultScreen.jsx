@@ -1,13 +1,14 @@
-import { ArrowLeft, AlertTriangle, Camera, CheckCircle2, Flag, Loader2, MessageSquare } from 'lucide-react';
+import { ArrowLeft, AlertTriangle, Camera, CheckCircle2, Flag, Loader2, MessageSquare, XCircle } from 'lucide-react';
 import { useState } from 'react';
 import { Button } from './ui/button';
 import { ImageWithFallback } from './figma/ImageWithFallback';
 import { flagPredictionForRetraining } from '../utils/api';
-import { evaluatePredictionDecision, formatPredictionLabel } from '../utils/predictionDecision';
+import { evaluatePredictionDecision, formatPredictionLabel, getExplainabilityOverlay } from '../utils/predictionDecision';
 
 export default function ResultScreen({ navigate, selectedImage, currentPrediction, currentUser }) {
   const prediction = currentPrediction || null;
   const decision = evaluatePredictionDecision(prediction);
+  const explainability = getExplainabilityOverlay(prediction);
   const topPredictions = Array.isArray(prediction?.top_predictions) ? prediction.top_predictions : [];
   const cropContext = prediction?.crop || prediction?.crop_hint || prediction?.inferred_crop_hint || null;
   
@@ -56,6 +57,11 @@ export default function ResultScreen({ navigate, selectedImage, currentPredictio
     }
   };
   const tone = toneStyles[decision.badgeTone] || toneStyles.neutral;
+  const explainabilityTone = {
+    success: 'border-emerald-200 bg-emerald-50 text-emerald-900',
+    warning: 'border-amber-200 bg-amber-50 text-amber-900',
+    danger: 'border-red-200 bg-red-50 text-red-900'
+  }[explainability.tone] || 'border-slate-200 bg-slate-50 text-slate-900';
 
   const handleFlagClick = () => {
     setShowFlagModal(true);
@@ -220,6 +226,23 @@ export default function ResultScreen({ navigate, selectedImage, currentPredictio
 
           <div className="rounded-xl border border-gray-100 bg-gray-50 p-4">
             <p className="text-gray-500 text-xs uppercase">Heatmap</p>
+            {explainability ? (
+              <div className={`mt-3 rounded-xl border px-3 py-2 ${explainabilityTone}`}>
+                <div className="flex items-start gap-2">
+                  {explainability.focusAssessment === 'lesion_area' ? (
+                    <CheckCircle2 className="h-4 w-4 mt-0.5" />
+                  ) : explainability.focusAssessment === 'background' ? (
+                    <XCircle className="h-4 w-4 mt-0.5" />
+                  ) : (
+                    <AlertTriangle className="h-4 w-4 mt-0.5" />
+                  )}
+                  <div>
+                    <p className="text-sm font-semibold">{explainability.focusMessage}</p>
+                    <p className="text-xs mt-1">{explainability.reliabilityMessage}</p>
+                  </div>
+                </div>
+              </div>
+            ) : null}
             {prediction?.gradcam_png_base64 ? (
               <div className="mt-3 overflow-hidden rounded-xl border border-gray-200 bg-white">
                 <img
