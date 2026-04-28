@@ -4,10 +4,14 @@
   "private": true,
   "main": "node_modules/expo/AppEntry.js",
   "scripts": {
-    "start": "expo start",
-    "android": "expo run:android",
-    "ios": "expo run:ios",
-    "web": "expo start --web",
+    "start": "set \"EXPO_NO_DEPENDENCY_VALIDATION=1\" && expo start",
+    "mobile": "npm --prefix .. run mobile",
+    "start:all": "npm --prefix .. run start:all",
+    "start:all:lan": "npm --prefix .. run start:all:lan",
+    "start:all:tunnel": "npm --prefix .. run start:all:tunnel",
+    "android": "set \"EXPO_NO_DEPENDENCY_VALIDATION=1\" && expo run:android",
+    "ios": "set \"EXPO_NO_DEPENDENCY_VALIDATION=1\" && expo run:ios",
+    "web": "set \"EXPO_NO_DEPENDENCY_VALIDATION=1\" && expo start --web",
     "lint": "echo \"Add eslint config if needed\""
   },
   "dependencies": {

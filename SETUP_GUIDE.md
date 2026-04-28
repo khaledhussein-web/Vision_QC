@@ -34,6 +34,7 @@ The `db_operations.py` module should be in the same `backend/` directory as `fas
 ### Start the backend:
 ```bash
 cd backend
+node index.js
 python -m uvicorn backend.fastapi_service:app --reload --host 127.0.0.1 --port 8000
 ```
 

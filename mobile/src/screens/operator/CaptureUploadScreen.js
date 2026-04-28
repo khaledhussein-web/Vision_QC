@@ -1,5 +1,5 @@
 import React, { useMemo, useState } from 'react';
-import { Alert, Image, StyleSheet, Text, View } from 'react-native';
+import { Alert, Image, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import * as ImagePicker from 'expo-image-picker';
 import ScreenContainer from '../../components/ScreenContainer';
 import PrimaryButton from '../../components/PrimaryButton';
@@ -15,9 +15,27 @@ const normalizeAsset = (pickerAsset) => {
   };
 };
 
+const SUPPORTED_CROP_HINTS = [
+  'apple',
+  'apricot',
+  'bean',
+  'cherry',
+  'corn',
+  'fig',
+  'grape',
+  'loquat',
+  'pear',
+  'pepper',
+  'persimmon',
+  'potato',
+  'tomato',
+  'walnut'
+];
+
 export default function CaptureUploadScreen({ navigation }) {
   const { session } = useAuth();
   const [asset, setAsset] = useState(null);
+  const [cropHint, setCropHint] = useState('');
   const [loading, setLoading] = useState(false);
   const previewUri = useMemo(() => String(asset?.uri || ''), [asset]);
 
@@ -63,7 +81,8 @@ export default function CaptureUploadScreen({ navigation }) {
     try {
       const prediction = await analyzeImageApi({
         token: session?.token,
-        imageAsset: asset
+        imageAsset: asset,
+        cropHint
       });
       navigation.navigate('PredictionResult', {
         prediction,
@@ -83,7 +102,36 @@ export default function CaptureUploadScreen({ navigation }) {
 
       <View style={styles.card}>
         {previewUri ? (
-          <Image source={{ uri: previewUri }} style={styles.preview} />
+          <>
+            <Image source={{ uri: previewUri }} style={styles.preview} />
+            <View style={styles.meta}>
+              <Text style={styles.label}>Crop / Plant Type (Optional but recommended)</Text>
+              <TextInput
+                value={cropHint}
+                onChangeText={setCropHint}
+                placeholder="Select or type crop name (e.g., apple)"
+                autoCapitalize="none"
+                style={styles.input}
+              />
+              <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.chips}>
+                {SUPPORTED_CROP_HINTS.map((crop) => {
+                  const selected = cropHint.trim().toLowerCase() === crop;
+                  return (
+                    <Pressable
+                      key={crop}
+                      onPress={() => setCropHint(crop)}
+                      style={[styles.chip, selected && styles.chipSelected]}
+                    >
+                      <Text style={[styles.chipText, selected && styles.chipTextSelected]}>{crop}</Text>
+                    </Pressable>
+                  );
+                })}
+              </ScrollView>
+              <Text style={styles.helpText}>
+                Matching crop type improves diagnosis by narrowing disease classes.
+              </Text>
+            </View>
+          </>
         ) : (
           <View style={styles.emptyPreview}>
             <Text style={styles.emptyText}>No image selected</Text>
@@ -122,6 +170,52 @@ const styles = StyleSheet.create({
   preview: {
     width: '100%',
     height: 260
+  },
+  meta: {
+    padding: 12,
+    borderTopWidth: 1,
+    borderTopColor: '#e2e8f0',
+    gap: 8
+  },
+  label: {
+    color: '#0f172a',
+    fontWeight: '700'
+  },
+  input: {
+    borderWidth: 1,
+    borderColor: '#cbd5e1',
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    backgroundColor: '#ffffff',
+    color: '#0f172a'
+  },
+  chips: {
+    gap: 8,
+    paddingVertical: 2
+  },
+  chip: {
+    borderWidth: 1,
+    borderColor: '#86efac',
+    backgroundColor: '#f0fdf4',
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 999
+  },
+  chipSelected: {
+    backgroundColor: '#16a34a',
+    borderColor: '#16a34a'
+  },
+  chipText: {
+    color: '#166534',
+    fontWeight: '600'
+  },
+  chipTextSelected: {
+    color: '#ffffff'
+  },
+  helpText: {
+    color: '#64748b',
+    fontSize: 12
   },
   emptyPreview: {
     height: 220,

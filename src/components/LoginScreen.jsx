@@ -117,12 +117,6 @@ export default function LoginScreen({ onLogin, onRegister, onForgotPassword, onV
           </button>
         </div>
 
-        {/* Admin Demo Credentials */}
-        <div className="mt-8 p-4 bg-blue-50 border border-blue-200 rounded-lg">
-          <p className="text-gray-700 mb-2">Demo Credentials:</p>
-          <p className="text-gray-600">Admin: admin@visionqc.com / admin123</p>
-          <p className="text-gray-600">User: user@visionqc.com / password123</p>
-        </div>
       </div>
     </div>
   );

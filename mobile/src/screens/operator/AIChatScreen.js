@@ -52,7 +52,8 @@ export default function AIChatScreen({ route }) {
         }
       ]);
     } catch (error) {
-      Alert.alert('Chat failed', error?.error || 'Unable to send message.');
+      const details = [error?.error, error?.detail, error?.hint].filter(Boolean).join('\n');
+      Alert.alert('Chat failed', details || 'Unable to send message.');
       setMessages((prev) => prev.filter((m) => m.localId !== nextMessages[nextMessages.length - 1].localId));
       setInput(message);
     } finally {

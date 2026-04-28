@@ -1,6 +1,6 @@
-import { Upload, History, MessageSquare, User, Leaf, Brain, Bookmark, Bot, ScanSearch, ArrowRight } from 'lucide-react';
+import { Upload, History, MessageSquare, User, Leaf, Brain, Bookmark, Bot, ScanSearch, ArrowRight, LogOut } from 'lucide-react';
 
-export default function HomeScreen({ navigate }) {
+export default function HomeScreen({ navigate, onLogout }) {
   const menuItems = [
     { icon: Upload, label: 'Upload Image', screen: 'upload', color: 'from-green-500 to-green-600' },
     { icon: History, label: 'My History', screen: 'history', color: 'from-blue-500 to-blue-600' },
@@ -52,7 +52,17 @@ export default function HomeScreen({ navigate }) {
             <Leaf className="w-8 h-8 text-white" />
             <h1 className="text-white">VisionQC</h1>
           </div>
-          <Brain className="w-6 h-6 text-white" />
+          <div className="flex items-center gap-2">
+            <Brain className="w-6 h-6 text-white" />
+            <button
+              onClick={onLogout}
+              className="inline-flex items-center gap-1 rounded-lg border border-white/40 bg-white/10 px-3 py-1.5 text-white transition-colors hover:bg-white/20"
+              aria-label="Log out"
+            >
+              <LogOut className="h-4 w-4" />
+              Logout
+            </button>
+          </div>
         </div>
         <p className="text-white/90">Welcome back! Ready to analyze?</p>
       </div>

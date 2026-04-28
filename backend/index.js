@@ -142,6 +142,41 @@ const buildFallbackChatReply = (message) => {
   ].join('\n');
 };
 
+const isCodingSpecializedModel = (modelName) =>
+  /(deepseek-coder|codellama|coder|codeqwen|starcoder)/i.test(String(modelName || '').trim());
+
+const looksOffDomainChatReply = (replyText) => {
+  const text = String(replyText || '').trim();
+  if (!text) return true;
+
+  const offDomainSignals =
+    /(programming assistant|deepseek|computer science|software engineering|software development|coding questions|not my area of expertise|outside my (domain|expertise))/i.test(
+      text
+    );
+  const plantDomainSignals =
+    /(plant|leaf|leaves|crop|disease|fung|bacter|blight|mildew|watering|soil|prun|spray|treat|pest|orchard|fruit tree)/i.test(
+      text
+    );
+
+  return offDomainSignals && !plantDomainSignals;
+};
+
+const buildPlantDomainRecoveryReply = (message, predictionContext = null) => {
+  const normalizedMessage = String(message || '').trim();
+  const label = String(predictionContext?.label || '').trim();
+
+  const line1 = label
+    ? `1: Your image context suggests "${label}", so isolate the plant and remove the most affected leaves.`
+    : '1: Isolate the plant and remove the most affected leaves to limit spread.';
+  const line2 =
+    '2: Keep foliage dry, water at soil level only, and improve airflow around the plant.';
+  const line3 = normalizedMessage
+    ? `3: Upload a clearer close-up in VisionQC and follow crop-specific treatment guidance for: "${normalizedMessage.slice(0, 90)}${normalizedMessage.length > 90 ? '...' : ''}".`
+    : '3: Upload a clearer close-up in VisionQC to get a more accurate crop-specific treatment plan.';
+
+  return [line1, line2, line3].join('\n');
+};
+
 const extractOriginalQuestion = (message) => {
   const text = String(message || '').trim();
   if (!text) return '';
@@ -1926,10 +1961,12 @@ app.post('/api/chat', authenticateToken, upload.single('image'), async (req, res
     } catch (primaryError) {
       const errorMessage = String(primaryError?.message || '');
       const memoryError = /requires more system memory|insufficient memory/i.test(errorMessage);
+      const fallbackIsCodingSpecialized = isCodingSpecializedModel(OLLAMA_FALLBACK_MODEL);
       const canUseFallback =
         memoryError &&
         OLLAMA_FALLBACK_MODEL &&
-        OLLAMA_FALLBACK_MODEL.toLowerCase() !== activeOllamaModel.toLowerCase();
+        OLLAMA_FALLBACK_MODEL.toLowerCase() !== activeOllamaModel.toLowerCase() &&
+        !fallbackIsCodingSpecialized;
 
       if (!canUseFallback) {
         throw primaryError;
@@ -1953,6 +1990,14 @@ app.post('/api/chat', authenticateToken, upload.single('image'), async (req, res
     });
     reply = buildFallbackChatReply(promptMessage);
     source = 'fallback';
+  }
+
+  if (looksOffDomainChatReply(reply)) {
+    console.warn('Chat guardrail replaced off-domain model reply', {
+      model: activeOllamaModel
+    });
+    reply = buildPlantDomainRecoveryReply(promptMessage, predictionContext);
+    source = 'guardrail';
   }
 
   if (predictionContext) {

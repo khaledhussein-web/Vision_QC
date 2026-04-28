@@ -19,7 +19,7 @@ import ReportsScreen from './components/admin/ReportsScreen';
 import AccessControl from './components/admin/AccessControl';
 import APIDocumentation from './components/APIDocumentation';
 import SEOHead from './components/SEOHead';
-import { createAdminUser, updateAdminUser, deleteAdminUser } from './utils/api';
+import { createAdminUser, updateAdminUser, deleteAdminUser, logout } from './utils/api';
 
 const getResetTokenFromLocation = () => {
   if (typeof window === 'undefined') return '';
@@ -162,6 +162,22 @@ export default function App() {
     return deleteAdminUser(id);
   };
 
+  const handleLogout = () => {
+    logout();
+    setIsAdmin(false);
+    setUserId(null);
+    setUserEmail('');
+    setUserName('');
+    setSelectedImage(null);
+    setSelectedImageId(null);
+    setSelectedAdminImage(null);
+    setCurrentPrediction(null);
+    setResetToken('');
+    setForgotPasswordEmail('');
+    updateAddressBar('login');
+    setCurrentScreen('login');
+  };
+
   // Get SEO data based on current screen
   const getSEOData = () => {
     switch (currentScreen) {
@@ -282,7 +298,7 @@ export default function App() {
       case 'reset-password':
         return <ResetPasswordScreen initialToken={resetToken} onBack={() => navigate('login')} />;
       case 'home':
-        return <HomeScreen navigate={navigate} />;
+        return <HomeScreen navigate={navigate} onLogout={handleLogout} />;
       case 'upload':
         return <UploadScreen 
           navigate={navigate} 
@@ -338,7 +354,7 @@ export default function App() {
       case 'api-docs':
         return <APIDocumentation navigate={navigate} />;
       default:
-        return <HomeScreen navigate={navigate} />;
+        return <HomeScreen navigate={navigate} onLogout={handleLogout} />;
     }
   };
 

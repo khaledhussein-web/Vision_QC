@@ -715,6 +715,17 @@ export function setCurrentUserId(userId) {
   currentUserId = userId;
 }
 
+// Helper to clear local auth state
+export function logout() {
+  authToken = null;
+  currentUserId = null;
+  try {
+    localStorage.removeItem(TOKEN_STORAGE_KEY);
+  } catch (error) {
+    // Ignore storage access issues
+  }
+}
+
 
 
 
